@@ -1,10 +1,28 @@
 {
   "name": "message-timestamps",
   "version": "0.1.0",
-  "description": "Shows when messages were sent: on Claude's final reply, on slash command output, and on hover over your messages",
+  "description": "Shows when messages were sent: at the end of Claude's last answer, on slash command output, and when you hover over your own messages. Uses a 24- or 12-hour clock.",
   "types": "./types/index.d.ts",
   "license": "MIT",
   "author": {
     "name": "zzx-007-d"
+  },
+  "userConfig": {
+    "clock": {
+      "type": "string",
+      "title": "Clock",
+      "description": "24-hour (23:21) or 12-hour (11:21 PM) times",
+      "options": [
+        "24-hour",
+        "12-hour"
+      ],
+      "default": "24-hour"
+    },
+    "hover_time": {
+      "type": "boolean",
+      "title": "Time on hover over your messages",
+      "description": "In the desktop app, show the time when you hover over one of your own messages",
+      "default": true
+    }
   }
 }

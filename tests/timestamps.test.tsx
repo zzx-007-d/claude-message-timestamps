@@ -113,3 +113,59 @@ test('a slash command output row shows its time', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /22:56/ }))?.text).toBe('22:56')
   await ui.unmount()
 })
+
+test('the 12-hour clock setting shows AM/PM', { options: { clock: '12-hour' } }, async ($, on) => {
+  seed(on)
+  const reply = await $.ui.mount({
+    plugin: 'message-timestamps',
+    surface: 'desktop',
+    component: 'AssistantMessage',
+    requestId: 'msg_old-t0',
+    props: { text: 'hi', isFirstOfReply: true },
+  })
+  expect((await reply.find({ type: 'Text', text: /Oct/ }))?.text).toBe('2 Oct, 8:05 AM')
+  await reply.unmount()
+  const prompt = await $.ui.mount({
+    plugin: 'message-timestamps',
+    surface: 'terminal',
+    component: 'UserMessage',
+    requestId: 'u1',
+    props: { text: 'hello', origin: { kind: 'composer' }, isExpanded: false },
+  })
+  expect((await prompt.find({ type: 'Text', text: /PM/ }))?.text).toBe('10:56 PM')
+  await prompt.unmount()
+})
+
+test('turning the hover time off leaves your messages as the app draws them', { options: { hover_time: false } }, async ($, on) => {
+  seed(on)
+  const ui = await $.ui.mount({
+    plugin: 'message-timestamps',
+    surface: 'desktop',
+    component: 'UserMessage',
+    requestId: 'u1',
+    props: { text: 'hello', origin: { kind: 'composer' }, isExpanded: false },
+  })
+  expect(await ui.find({ type: 'Text', text: /\d\d:\d\d/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+// Regression: a long date ("22 Oct, 21:47") beside a wide answer was squeezed
+// onto three lines. The time's box must never shrink.
+for (const component of ['AssistantMessage', 'CommandOutput'] as const) {
+  test(`the time beside a ${component} never shrinks or wraps`, async ($, on) => {
+    seed(on)
+    const ui = await $.ui.mount({
+      plugin: 'message-timestamps',
+      surface: 'desktop',
+      component,
+      requestId: component === 'AssistantMessage' ? 'msg_old-t0' : 'u1',
+      props:
+        component === 'AssistantMessage'
+          ? { text: 'a long answer', isFirstOfReply: true }
+          : { command: 'cost', args: '', text: 'a long output', isErrored: false },
+    })
+    const box = await ui.find({ type: 'Box', key: 'stamp' })
+    expect(box?.props.flexShrink).toBe(0)
+    await ui.unmount()
+  })
+}

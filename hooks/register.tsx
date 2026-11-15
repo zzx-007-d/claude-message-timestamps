@@ -19,10 +19,16 @@ const latestAt = atom({ plugin: 'message-timestamps', key: 'latestAt' } as const
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const pad = (n: number) => String(n).padStart(2, '0')
 
+// The "Clock" setting: 24-hour (23:21) or 12-hour (11:21 PM).
+let isTwelveHour = false
+
 export function formatStamp(local: number, localNow: number): string {
   const d = new Date(local)
   const now = new Date(localNow)
-  const time = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
+  const hours = d.getUTCHours()
+  const time = isTwelveHour
+    ? `${hours % 12 || 12}:${pad(d.getUTCMinutes())} ${hours < 12 ? 'AM' : 'PM'}`
+    : `${pad(hours)}:${pad(d.getUTCMinutes())}`
   const sameDay =
     d.getUTCFullYear() === now.getUTCFullYear() &&
     d.getUTCMonth() === now.getUTCMonth() &&
@@ -84,7 +90,10 @@ function refresh($: EngineInterface): Promise<void> {
   return pending
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  isTwelveHour = options.clock === '12-hour'
+  const isHoverTimeOn = options.hover_time !== false
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     void refresh($)
@@ -122,6 +131,7 @@ export const register: Register = on => {
   // own hover toolbar (Just now, copy, rewind), just left of it.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
+    if (e.surface === 'desktop' && !isHoverTimeOn) return next(e)
     const at = lookup(await read($, stamps), e.requestId)
     const row = await next(e)
     if (at === undefined) {
@@ -130,7 +140,7 @@ export const register: Register = on => {
     }
     const { Box, Text } = $.ui.resolve(e)
     const now = await localNow($)
-    const stamp = <Text dimColor>{formatStamp(at, now)}</Text>
+    const stamp = <Text dimColor size="caption">{formatStamp(at, now)}</Text>
     if (e.surface === 'terminal') {
       return (
         <Box flexDirection="column">
@@ -140,7 +150,9 @@ export const register: Register = on => {
       )
     }
     // The keyed Box is the hover area; the time takes no room (absolute) and
-    // stays hidden until the pointer is over the message.
+    // stays hidden until the pointer is over the message. A one-line-tall box
+    // with the text centered in it lines the time up with the middle of the
+    // app's toolbar rather than the row's bottom edge.
     return (
       <Box key={`prompt-${e.requestId}`} flexDirection="column">
         {row}
@@ -148,6 +160,9 @@ export const register: Register = on => {
           position="absolute"
           bottom={0}
           right={hoverToolbarWidth(now - at)}
+          height={1}
+          flexDirection="column"
+          justifyContent="center"
           display="none"
           hover={{ display: 'flex' }}
         >
@@ -183,7 +198,9 @@ export const register: Register = on => {
         <Box flexGrow={1} flexShrink={1}>
           {row}
         </Box>
-        <Text dimColor>{formatStamp(at, await localNow($))}</Text>
+        <Box key="stamp" flexShrink={0}>
+          <Text dimColor size="body">{formatStamp(at, await localNow($))}</Text>
+        </Box>
       </Box>
     )
   })
@@ -204,7 +221,9 @@ export const register: Register = on => {
         <Box flexGrow={1} flexShrink={1}>
           {row}
         </Box>
-        <Text dimColor>{formatStamp(at, await localNow($))}</Text>
+        <Box key="stamp" flexShrink={0}>
+          <Text dimColor size="body">{formatStamp(at, await localNow($))}</Text>
+        </Box>
       </Box>
     )
   })
@@ -239,13 +258,22 @@ function ensurePoller($: EngineInterface): void {
 }
 
 // How far in from the right edge the app's hover toolbar under your message
-// reaches ("✓✓ <age> · copy · rewind"), in cells, so your hovered time sits
-// just left of it. The width follows the app's age label: "Just now" in the
-// first minute, then up to "59 minutes ago" / "23 hours ago" / a date.
-// Measured: 20 fits "Just now"; "5 minutes ago" needs ~23.
-function hoverToolbarWidth(ageMs: number): number {
-  if (ageMs < 60_000) return HOVER_TOOLBAR_JUST_NOW
-  return HOVER_TOOLBAR_LONGEST
+// reaches ("✓✓ <age label> · copy · rewind"), in cells (about 8px each), so
+// your hovered time sits just left of it. The toolbar's width follows the
+// app's age label, so the offset does too. Measured on one screen: "Just now"
+// 19 and a date like "Oct 22" 18; the others are estimated from label length.
+const HOVER_TOOLBAR = {
+  justNow: 19, // "Just now", first minute
+  minutes: 24, // "5 minutes ago"
+  hours: 23, // "3 hours ago"
+  days: 21, // "2 days ago"
+  date: 18, // "Oct 22"
 }
-const HOVER_TOOLBAR_JUST_NOW = 20
-const HOVER_TOOLBAR_LONGEST = 25
+function hoverToolbarWidth(ageMs: number): number {
+  const minute = 60_000
+  if (ageMs < minute) return HOVER_TOOLBAR.justNow
+  if (ageMs < 60 * minute) return HOVER_TOOLBAR.minutes
+  if (ageMs < 24 * 60 * minute) return HOVER_TOOLBAR.hours
+  if (ageMs < 7 * 24 * 60 * minute) return HOVER_TOOLBAR.days
+  return HOVER_TOOLBAR.date
+}
