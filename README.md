@@ -50,21 +50,29 @@ To get a newer version later, run `claude plugin update message-timestamps@zzx-0
 | `clock` | `24-hour` or `12-hour` | `24-hour` |
 | `hover_time`, the time on hover over your own messages | `true` or `false` | `true` |
 
-In a terminal session of Claude Code, type `/plugin configure message-timestamps@zzx-007-d` and pick the values.
+The desktop app has no settings screen for mods, so how you change these depends on what you have installed. Restart Claude Code after any change.
 
-In the desktop app, use a regular command line instead. For example, to switch to the 12-hour clock and turn the hover time off, in PowerShell, macOS or Linux:
+**With Claude Code in a terminal:** type `/plugin configure message-timestamps@zzx-007-d` in a session and pick the values from the menu.
+
+**With the `claude` command on your command line:** for example, to switch to the 12-hour clock and turn the hover time off, in PowerShell, macOS or Linux:
 
 ```
 echo '{"clock":"12-hour","hover_time":"false"}' | claude plugin configure message-timestamps@zzx-007-d --values-stdin
 ```
 
-In the Windows Command Prompt, leave out the single quotes:
+In the Windows Command Prompt, leave out the single quotes. Leave out a setting to keep its current value.
 
-```
-echo {"clock":"12-hour","hover_time":"false"} | claude plugin configure message-timestamps@zzx-007-d --values-stdin
+**With only the desktop app:** the `claude` command usually isn't available, so edit your settings file instead. Open `.claude/settings.json` in your home folder (on Windows, `C:\Users\<you>\.claude\settings.json`) and add this inside the outermost `{ }`, with a comma after the entry before it:
+
+```json
+"pluginConfigs": {
+  "message-timestamps@zzx-007-d": {
+    "options": { "clock": "12-hour", "hover_time": false }
+  }
+}
 ```
 
-Leave out a setting to keep its current value. Restart Claude Code afterwards.
+If the file already has a `pluginConfigs` section, add the `"message-timestamps@zzx-007-d"` part inside it instead.
 
 ## Privacy
 
