@@ -1,6 +1,6 @@
 {
   "name": "message-timestamps",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shows when messages were sent: at the end of Claude's last answer, on slash command output, and when you hover over your own messages. Uses a 24- or 12-hour clock.",
   "types": "./types/index.d.ts",
   "license": "MIT",
@@ -17,6 +17,16 @@
         "12-hour"
       ],
       "default": "24-hour"
+    },
+    "reply_time": {
+      "type": "string",
+      "title": "Where Claude's time goes",
+      "description": "At the bottom right of Claude's answer, or on its own line under it",
+      "options": [
+        "bottom right",
+        "below"
+      ],
+      "default": "bottom right"
     },
     "hover_time": {
       "type": "boolean",

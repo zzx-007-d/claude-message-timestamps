@@ -6,7 +6,7 @@ The Claude Code desktop app labels messages with how long ago they were sent ("J
 
 ## What you'll see
 
-- Each of Claude's answers gets a grey time at its bottom right, where the answer ends, so you can see when it finished without hovering. It shows up as soon as the answer does.
+- Each of Claude's answers gets a grey time at its bottom right, where the answer ends, so you can see when it finished without hovering. It shows up as soon as the answer does. In Settings you can move it to its own line under the answer.
 - The output of slash commands like `/reload-plugins` or `/cost` gets a time in the same spot.
 - Your own messages show their time as soon as your pointer is anywhere over them, just left of the app's own label, which is quicker than aiming at the label and waiting for its tooltip. You can turn this off in Settings.
 - In the terminal, your messages get their time on the line underneath.
@@ -48,6 +48,7 @@ To get a newer version later, run `claude plugin update message-timestamps@zzx-0
 | Setting | Choices | Default |
 | --- | --- | --- |
 | `clock` | `24-hour` or `12-hour` | `24-hour` |
+| `reply_time`, where the time on Claude's answers goes | `bottom right` or `below` (on its own line under the answer) | `bottom right` |
 | `hover_time`, the time on hover over your own messages | `true` or `false` | `true` |
 
 The desktop app has no settings screen for mods, so how you change these depends on what you have installed. Restart Claude Code after any change.

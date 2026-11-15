@@ -149,6 +149,22 @@ test('turning the hover time off leaves your messages as the app draws them', { 
   await ui.unmount()
 })
 
+for (const [setting, isBelow] of [[undefined, false], ['below', true]] as const) {
+  test(`Claude's time goes ${isBelow ? 'under the answer' : 'at its bottom right'} with reply_time ${setting ?? 'unset'}`, { options: setting ? { reply_time: setting } : {} }, async ($, on) => {
+    seed(on)
+    const ui = await $.ui.mount({
+      plugin: 'message-timestamps',
+      surface: 'desktop',
+      component: 'AssistantMessage',
+      requestId: 'msg_old-t0',
+      props: { text: 'hi', isFirstOfReply: true },
+    })
+    const box = await ui.find({ type: 'Box', key: 'stamp' })
+    expect(box?.props.paddingLeft).toBe(isBelow ? 'xs' : undefined)
+    await ui.unmount()
+  })
+}
+
 // Regression: a long date ("22 Oct, 21:47") beside a wide answer was squeezed
 // onto three lines. The time's box must never shrink.
 for (const component of ['AssistantMessage', 'CommandOutput'] as const) {

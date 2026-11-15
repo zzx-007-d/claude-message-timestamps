@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
 import type { Stamps } from '../types'
 
@@ -21,6 +21,9 @@ const pad = (n: number) => String(n).padStart(2, '0')
 
 // The "Clock" setting: 24-hour (23:21) or 12-hour (11:21 PM).
 let isTwelveHour = false
+// The "Where Claude's time goes" setting: bottom right of the answer, or on
+// its own line under it.
+let isReplyTimeBelow = false
 
 export function formatStamp(local: number, localNow: number): string {
   const d = new Date(local)
@@ -92,6 +95,7 @@ function refresh($: EngineInterface): Promise<void> {
 
 export const register: Register = (on, options) => {
   isTwelveHour = options.clock === '12-hour'
+  isReplyTimeBelow = options.reply_time === 'below'
   const isHoverTimeOn = options.hover_time !== false
 
   on('session.start', async ($, e, next) => {
@@ -172,7 +176,7 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // Claude's reply: one time per turn, at the bottom right of the last block of
+  // Claude's reply: one time per turn, beside or under the last block of
   // text the turn wrote (while a turn runs, its latest block so far). Not on
   // the app's button row under it: a mod can't add to that row, and the
   // desktop clips anything drawn outside the message's own area.
@@ -192,22 +196,12 @@ export const register: Register = (on, options) => {
       if (Object.keys(map).length > 0) at = (await read($, latestAt)) ?? undefined
     }
     if (at === undefined) return row
-    const { Box, Text } = $.ui.resolve(e)
-    return (
-      <Box flexDirection="row" alignItems="flex-end" gap="sm">
-        <Box flexGrow={1} flexShrink={1}>
-          {row}
-        </Box>
-        <Box key="stamp" flexShrink={0}>
-          <Text dimColor size="body">{formatStamp(at, await localNow($))}</Text>
-        </Box>
-      </Box>
-    )
+    return withReplyTime($.ui.resolve(e), row, formatStamp(at, await localNow($)))
   })
 
   // A slash command's output (/reload-plugins, /cost, ...): the app treats it
   // like a reply (it gets the copy/pin/"Just now" row), so it gets a time too,
-  // at its bottom right.
+  // placed the same way.
   on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => {
     const at = (await read($, stamps))[e.requestId]
     const row = await next(e)
@@ -215,18 +209,39 @@ export const register: Register = (on, options) => {
       retryLater()
       return row
     }
-    const { Box, Text } = $.ui.resolve(e)
+    return withReplyTime($.ui.resolve(e), row, formatStamp(at, await localNow($)))
+  })
+}
+
+// Claude's answer (or a command's output) with its time: at the bottom right,
+// beside the last line, or on its own line under the text, lined up with it.
+// The time's box never shrinks, so a long date can't wrap.
+function withReplyTime(
+  { Box, Text }: ReturnType<EngineInterface['ui']['resolve']>,
+  row: RenderElement,
+  label: string,
+): RenderElement {
+  const time = <Text dimColor size="body">{label}</Text>
+  if (isReplyTimeBelow) {
     return (
-      <Box flexDirection="row" alignItems="flex-end" gap="sm">
-        <Box flexGrow={1} flexShrink={1}>
-          {row}
-        </Box>
-        <Box key="stamp" flexShrink={0}>
-          <Text dimColor size="body">{formatStamp(at, await localNow($))}</Text>
+      <Box flexDirection="column">
+        {row}
+        <Box key="stamp" flexShrink={0} paddingLeft="xs" marginTop="xs">
+          {time}
         </Box>
       </Box>
     )
-  })
+  }
+  return (
+    <Box flexDirection="row" alignItems="flex-end" gap="sm">
+      <Box flexGrow={1} flexShrink={1}>
+        {row}
+      </Box>
+      <Box key="stamp" flexShrink={0}>
+        {time}
+      </Box>
+    </Box>
+  )
 }
 
 // A reply block is drawn as `<API message id>-t<n>`; a prompt by its row uuid.
