@@ -1,0 +1,10 @@
+{
+  "name": "message-timestamps",
+  "version": "0.1.0",
+  "description": "Shows when messages were sent: on Claude's final reply, on slash command output, and on hover over your messages",
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "author": {
+    "name": "zzx-007-d"
+  }
+}

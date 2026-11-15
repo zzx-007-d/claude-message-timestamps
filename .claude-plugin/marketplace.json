@@ -1,0 +1,13 @@
+{
+  "name": "zzx-007-d",
+  "description": "Claude Code mods by zzx-007-d",
+  "owner": {
+    "name": "zzx-007-d"
+  },
+  "plugins": [
+    {
+      "name": "message-timestamps",
+      "source": "./"
+    }
+  ]
+}
