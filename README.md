@@ -7,9 +7,11 @@ The Claude Code desktop app labels messages with how long ago they were sent ("J
 ## What you'll see
 
 - Each of Claude's answers gets a grey time at its bottom right, where the answer ends, so you can see when it finished without hovering. It shows up as soon as the answer does. In Settings you can move it to its own line under the answer.
+- After that time, the answer shows how long Claude took, counted from when you sent your message: `23:21 · 2m 14s`. While Claude is still working, it shows the time so far. You can turn this off in Settings.
 - The output of slash commands like `/reload-plugins` or `/cost` gets a time in the same spot.
-- Your own messages show their time as soon as your pointer is anywhere over them, just left of the app's own label, which is quicker than aiming at the label and waiting for its tooltip. You can turn this off in Settings.
+- Your own messages show their time as soon as your pointer is anywhere over them, just left of the app's own label, which is quicker than aiming at the label and waiting for its tooltip. If you'd rather see it all the time, a setting puts it on a small line above each message instead. You can also turn it off.
 - In the terminal, your messages get their time on the line underneath.
+- When a conversation runs into a new day, a line above your first message of that day names it: `── Today ──`, `── Yesterday ──`, or for older days `── Thu 2 Oct ──`. A conversation that has stayed within today gets none. You can turn this off in Settings.
 
 Times follow your computer's time zone. With the default 24-hour clock they look like this:
 
@@ -20,6 +22,14 @@ Times follow your computer's time zone. With the default 24-hour clock they look
 | A previous year | `2 Oct 2025, 08:05` |
 
 With the 12-hour setting, the same times read `11:21 PM` and `2 Oct, 8:05 AM`.
+
+Dates can also be written in Italian or Chinese:
+
+| Language | This year | A previous year | 12-hour clock |
+| --- | --- | --- | --- |
+| English | `2 Oct, 08:05` | `2 Oct 2025, 08:05` | `11:21 PM` |
+| Italiano | `2 ott, 08:05` | `2 ott 2025, 08:05` | `11:21 PM` |
+| 中文 | `10月2日 08:05` | `2025年10月2日 08:05` | `下午11:21` |
 
 Messages sent before you installed the mod get times too. The mod reads them from the conversation history Claude Code already saves on your computer.
 
@@ -48,14 +58,18 @@ To get a newer version later, run `claude plugin update message-timestamps@zzx-0
 | Setting | Choices | Default |
 | --- | --- | --- |
 | `clock` | `24-hour` or `12-hour` | `24-hour` |
+| `language`, how dates are written | `English`, `Italiano` or `中文` | `English` |
 | `reply_time`, where the time on Claude's answers goes | `bottom right` or `below` (on its own line under the answer) | `bottom right` |
-| `hover_time`, the time on hover over your own messages | `true` or `false` | `true` |
+| `reply_duration`, how long Claude took, after the time on its answers | `true` or `false` | `true` |
+| `day_separators`, a line naming the day when a conversation reaches a new one | `true` or `false` | `true` |
+| `prompt_time`, where the time on your own messages goes in the desktop app | `on hover` (beside the app's "Just now" label) or `above` (always shown, on its own line above the message) | `on hover` |
+| `hover_time`, the time on your own messages in the desktop app | `true` or `false` | `true` |
 
 The desktop app has no settings screen for mods, so how you change these depends on what you have installed. Restart Claude Code after any change.
 
-**With Claude Code in a terminal:** type `/plugin configure message-timestamps@zzx-007-d` in a session and pick the values from the menu.
+If you use Claude Code in a terminal, type `/plugin configure message-timestamps@zzx-007-d` in a session and pick the values from the menu.
 
-**With the `claude` command on your command line:** for example, to switch to the 12-hour clock and turn the hover time off, in PowerShell, macOS or Linux:
+If the `claude` command works on your command line, you can pipe the values to it. This switches to the 12-hour clock and turns the time on your messages off, in PowerShell, macOS or Linux:
 
 ```
 echo '{"clock":"12-hour","hover_time":"false"}' | claude plugin configure message-timestamps@zzx-007-d --values-stdin
@@ -63,7 +77,7 @@ echo '{"clock":"12-hour","hover_time":"false"}' | claude plugin configure messag
 
 In the Windows Command Prompt, leave out the single quotes. Leave out a setting to keep its current value.
 
-**With only the desktop app:** the `claude` command usually isn't available, so edit your settings file instead. Open `.claude/settings.json` in your home folder (on Windows, `C:\Users\<you>\.claude\settings.json`) and add this inside the outermost `{ }`, with a comma after the entry before it:
+If you only have the desktop app, the `claude` command usually isn't available, so edit your settings file instead. Open `.claude/settings.json` in your home folder (on Windows, `C:\Users\<you>\.claude\settings.json`) and add this inside the outermost `{ }`, with a comma after the entry before it:
 
 ```json
 "pluginConfigs": {
@@ -81,7 +95,7 @@ To find the times of older messages, the mod runs a small Node.js script (`scrip
 
 ## What you need
 
-- Claude Code with mod support. It was built and tested on version 2.1.325, and versions before 2.1.271 can't load it because of how its settings are declared. Mods are an early-access feature, so a future Claude Code update could break this one.
+- Claude Code with mod support. It was built on version 2.1.325 and last tested on 2.1.328. Versions before 2.1.271 can't load it because of how its settings are declared. Mods are an early-access feature, so a future Claude Code update could break this one.
 - Node.js, which the mod uses to read times of older messages. Without it, only messages sent after a session starts get a time.
 - A Code tab session, in the desktop app or the terminal. The regular Chat tab doesn't run mods.
 
@@ -95,7 +109,7 @@ claude plugin disable message-timestamps@zzx-007-d
 
 ## Known limitations
 
-- The hover time under your messages is positioned to sit just left of the app's own label. The spacing was measured on one screen, so with other window sizes or font settings it can overlap the label or leave a gap. See "Adjusting the position" below.
+- The hover time under your messages is positioned to sit just left of the app's own label. The spacing was measured on one screen, so with other window sizes, font settings or a later version of the app it can overlap the label or leave a gap. See "Adjusting the position" below, or set `prompt_time` to `above`: the time then sits on its own line above your message, where nothing the app draws can move it.
 - The hover time appears as soon as your pointer reaches the message, a moment before the app fades in its own label and buttons. Mods can't delay it to match.
 - Claude's time can't go in the row of buttons under its answer (copy, pin, "Just now"). The app draws that row itself, and mods can't add to it.
 
@@ -105,4 +119,4 @@ If the hover time overlaps the app's label or leaves a gap, change the matching 
 
 A copy installed from GitHub doesn't pick up edits, so first clone this repository, add your clone with `claude plugin marketplace add <folder>`, and install from it. Then edit the file in your clone and type `/reload-plugins`.
 
-To run the tests, use `claude plugin test .` in this folder, and `claude plugin validate .` to check the mod for errors.
+To run the tests, use `claude plugin test .` in this folder, and `claude plugin validate .` to check the mod for errors. The script that reads older messages has tests of its own: `node --test tests/`.

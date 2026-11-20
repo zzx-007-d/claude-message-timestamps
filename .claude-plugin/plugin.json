@@ -1,7 +1,7 @@
 {
   "name": "message-timestamps",
-  "version": "0.2.0",
-  "description": "Shows when messages were sent: at the end of Claude's last answer, on slash command output, and when you hover over your own messages. Uses a 24- or 12-hour clock.",
+  "version": "0.3.0",
+  "description": "Shows when each message was sent and how long Claude took to answer, with a line marking each new day. Works in the desktop app and the terminal, with a 24- or 12-hour clock.",
   "types": "./types/index.d.ts",
   "license": "MIT",
   "author": {
@@ -18,6 +18,17 @@
       ],
       "default": "24-hour"
     },
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "How dates are written: English (2 Oct), Italiano (2 ott) or 中文 (10月2日)",
+      "options": [
+        "English",
+        "Italiano",
+        "中文"
+      ],
+      "default": "English"
+    },
     "reply_time": {
       "type": "string",
       "title": "Where Claude's time goes",
@@ -28,10 +39,32 @@
       ],
       "default": "bottom right"
     },
+    "reply_duration": {
+      "type": "boolean",
+      "title": "How long Claude took",
+      "description": "After the time on Claude's answer, show how long it took from your message (08:05 · 2m 14s)",
+      "default": true
+    },
+    "day_separators": {
+      "type": "boolean",
+      "title": "Day separators",
+      "description": "Above the first message of a new day, a line naming the day (── Yesterday ──)",
+      "default": true
+    },
+    "prompt_time": {
+      "type": "string",
+      "title": "Where the time on your messages goes",
+      "description": "In the desktop app: on hover, beside the app's \"Just now\" label, or always, on its own line above the message",
+      "options": [
+        "on hover",
+        "above"
+      ],
+      "default": "on hover"
+    },
     "hover_time": {
       "type": "boolean",
-      "title": "Time on hover over your messages",
-      "description": "In the desktop app, show the time when you hover over one of your own messages",
+      "title": "Time on your messages",
+      "description": "In the desktop app, show the time on your own messages, on hover or above them depending on the setting above",
       "default": true
     }
   }

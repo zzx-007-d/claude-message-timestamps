@@ -4,7 +4,10 @@
 // uuid and API message id, plus each turn's last reply.
 // Usage: node backfill.cjs <session-id>
 // Output: {"tz": <minutes behind UTC now>, "rows": {"<id>": <local-shifted ms>},
-//          "finals": ["<API message id of a turn's last text reply>", ...]}
+//          "finals": ["<API message id of a turn's last text reply>", ...],
+//          "durations": {"<that id>": <ms from its turn's prompt to its last text>}}
+// A message you send while Claude works is saved as an attachment row, not a
+// user row, so it joins the running turn instead of starting a new one.
 
 const fs = require('fs')
 const os = require('os')
@@ -41,12 +44,19 @@ function isShown(row) {
 async function main() {
   const id = process.argv[2] || ''
   // finals: the API message id of each turn's last text reply (what a turn ended on).
-  const out = { tz: new Date().getTimezoneOffset(), rows: {}, finals: [] }
+  // durations: the same ids -> how long that turn took (prompt to last text).
+  const out = { tz: new Date().getTimezoneOffset(), rows: {}, finals: [], durations: {} }
   const file = /^[0-9a-f-]{8,64}$/i.test(id) ? findTranscript(id) : null
   let lastReply = null
+  let promptTime = null
+  let lastTextTime = null
   const closeTurn = () => {
-    if (lastReply) out.finals.push(lastReply)
+    if (lastReply) {
+      out.finals.push(lastReply)
+      if (promptTime !== null && lastTextTime !== null) out.durations[lastReply] = lastTextTime - promptTime
+    }
     lastReply = null
+    lastTextTime = null
   }
   if (file) {
     const lines = readline.createInterface({ input: fs.createReadStream(file, 'utf8'), crlfDelay: Infinity })
@@ -62,8 +72,13 @@ async function main() {
       if (row.uuid) out.rows[row.uuid] = local
       const msgId = row.message && row.message.id
       if (msgId && !(msgId in out.rows)) out.rows[msgId] = local
-      if (row.type === 'user') closeTurn()
-      else if (row.type === 'assistant' && msgId) lastReply = msgId
+      if (row.type === 'user') {
+        closeTurn()
+        promptTime = local
+      } else if (row.type === 'assistant' && msgId) {
+        lastReply = msgId
+        lastTextTime = local
+      }
     }
     closeTurn() // the turn still running: its latest text so far
   }
