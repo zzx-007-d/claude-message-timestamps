@@ -1,11 +1,13 @@
 'use strict'
 // Reads this session's saved transcript and prints the send time of every
 // user prompt, assistant text block and slash command output, keyed by row
-// uuid and API message id, plus each turn's last reply.
+// uuid and API message id, plus each turn's last reply and how hard it worked.
 // Usage: node backfill.cjs <session-id>
 // Output: {"tz": <minutes behind UTC now>, "rows": {"<id>": <local-shifted ms>},
 //          "finals": ["<API message id of a turn's last text reply>", ...],
-//          "durations": {"<that id>": <ms from its turn's prompt to its last text>}}
+//          "durations": {"<that id>": <ms from its turn's prompt to its last text>},
+//          "thinking": {"<that id>": <ms the turn spent thinking>},
+//          "tokens": {"<that id>": <tokens Claude wrote in the turn>}}
 // A message you send while Claude works is saved as an attachment row, not a
 // user row, so it joins the running turn instead of starting a new one.
 
@@ -32,7 +34,9 @@ const hasText = blocks => blocks.some(b => b && b.type === 'text')
 function isShown(row) {
   const content = row.message && row.message.content
   if (row.type === 'user') {
-    if (row.isMeta) return false
+    // A compacted chat's summary is a hidden row, often stamped earlier than
+    // the prompt before it: not a message you sent.
+    if (row.isMeta || row.isCompactSummary) return false
     if (typeof content === 'string') return true
     return Array.isArray(content) && hasText(content) && !content.some(b => b && b.type === 'tool_result')
   }
@@ -45,18 +49,30 @@ async function main() {
   const id = process.argv[2] || ''
   // finals: the API message id of each turn's last text reply (what a turn ended on).
   // durations: the same ids -> how long that turn took (prompt to last text).
-  const out = { tz: new Date().getTimezoneOffset(), rows: {}, finals: [], durations: {} }
+  // thinking, tokens: the same ids -> how long the turn thought and how many
+  // tokens it wrote, over all its messages, tool calls included.
+  const out = { tz: new Date().getTimezoneOffset(), rows: {}, finals: [], durations: {}, thinking: {}, tokens: {} }
   const file = /^[0-9a-f-]{8,64}$/i.test(id) ? findTranscript(id) : null
   let lastReply = null
   let promptTime = null
   let lastTextTime = null
+  // Every row of one API message repeats that message's usage, so tokens are
+  // kept per message and added up when the turn closes.
+  let turnTokens = new Map()
+  let turnThinking = 0
   const closeTurn = () => {
     if (lastReply) {
       out.finals.push(lastReply)
       if (promptTime !== null && lastTextTime !== null) out.durations[lastReply] = lastTextTime - promptTime
+      if (turnThinking > 0) out.thinking[lastReply] = turnThinking
+      let tokens = 0
+      for (const n of turnTokens.values()) tokens += n
+      if (tokens > 0) out.tokens[lastReply] = tokens
     }
     lastReply = null
     lastTextTime = null
+    turnTokens = new Map()
+    turnThinking = 0
   }
   if (file) {
     const lines = readline.createInterface({ input: fs.createReadStream(file, 'utf8'), crlfDelay: Infinity })
@@ -65,6 +81,13 @@ async function main() {
       if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"') && !line.includes('"subtype":"local_command"')) continue
       let row
       try { row = JSON.parse(line) } catch { continue }
+      if (row.type === 'assistant' && row.message) {
+        const usage = row.message.usage
+        if (row.message.id && usage && typeof usage.output_tokens === 'number') {
+          turnTokens.set(row.message.id, usage.output_tokens)
+        }
+        if (typeof row.thinkingDurationMs === 'number') turnThinking += row.thinkingDurationMs
+      }
       if (!isShown(row)) continue
       const ms = Date.parse(row.timestamp)
       if (Number.isNaN(ms)) continue

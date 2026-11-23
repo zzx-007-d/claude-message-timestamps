@@ -82,3 +82,47 @@ test('a turn with no text yet has no duration', () => {
   assert.deepStrictEqual(out.finals, [])
   assert.deepStrictEqual(out.durations, {})
 })
+
+// When a chat is compacted, Claude Code saves a summary as a hidden user row,
+// often stamped with an earlier time than the prompt before it. It isn't a
+// message you sent: counting it made a pause look shorter and the next answer
+// look slower.
+test('the summary saved when a chat is compacted is not a message', () => {
+  const out = run([
+    prompt('p1', '00:00'),
+    text('a1', 'msg_1', '00:10'),
+    prompt('p2', '40:00'),
+    { type: 'user', uuid: 'sum1', isCompactSummary: true, isVisibleInTranscriptOnly: true, timestamp: at('20:00'), message: { content: 'This session is being continued' } },
+    text('a2', 'msg_2', '41:00'),
+  ])
+  assert.strictEqual(out.rows.sum1, undefined)
+  assert.deepStrictEqual(out.durations, { msg_1: 10_000, msg_2: 60_000 })
+})
+
+// Every row of one API message carries that message's full usage, and only
+// its thinking row carries how long it thought.
+const worked = (row, outputTokens, thinkingMs) => ({
+  ...row,
+  ...(thinkingMs === undefined ? {} : { thinkingDurationMs: thinkingMs }),
+  message: { ...row.message, usage: { input_tokens: 5, output_tokens: outputTokens } },
+})
+
+test('each turn adds up the tokens Claude wrote and how long it thought', () => {
+  const out = run([
+    prompt('p1', '00:00'),
+    worked(tool('a1', 'msg_1', '00:05'), 300, 4_000),
+    worked(tool('a2', 'msg_1', '00:06'), 300),
+    toolResult('r1', '00:10'),
+    worked(text('a3', 'msg_2', '00:20'), 1_200, 6_500),
+    prompt('p2', '01:00'),
+    worked(text('a4', 'msg_3', '01:05'), 40),
+  ])
+  assert.deepStrictEqual(out.tokens, { msg_2: 1_500, msg_3: 40 })
+  assert.deepStrictEqual(out.thinking, { msg_2: 10_500 })
+})
+
+test('rows without usage, like older transcripts, add nothing', () => {
+  const out = run([prompt('p1', '00:00'), text('a1', 'msg_1', '00:10')])
+  assert.deepStrictEqual(out.tokens, {})
+  assert.deepStrictEqual(out.thinking, {})
+})

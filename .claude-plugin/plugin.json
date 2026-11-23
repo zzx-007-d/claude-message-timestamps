@@ -1,7 +1,7 @@
 {
   "name": "message-timestamps",
-  "version": "0.3.0",
-  "description": "Shows when each message was sent and how long Claude took to answer, with a line marking each new day. Works in the desktop app and the terminal, with a 24- or 12-hour clock.",
+  "version": "0.4.0",
+  "description": "Shows when each message was sent and how long Claude took to answer (and, if you turn it on, how hard it worked), with a line marking each new day or long pause. Works in the desktop app and the terminal, with a 24- or 12-hour clock.",
   "types": "./types/index.d.ts",
   "license": "MIT",
   "author": {
@@ -32,7 +32,7 @@
     "reply_time": {
       "type": "string",
       "title": "Where Claude's time goes",
-      "description": "At the bottom right of Claude's answer, or on its own line under it",
+      "description": "At the bottom right of Claude's answer, or on its own line under it, at the right",
       "options": [
         "bottom right",
         "below"
@@ -45,10 +45,16 @@
       "description": "After the time on Claude's answer, show how long it took from your message (08:05 · 2m 14s)",
       "default": true
     },
+    "reply_details": {
+      "type": "boolean",
+      "title": "Thinking and tokens",
+      "description": "Put Claude's time on its own line under the answer and, when you point at it, show how long Claude thought and how many tokens it wrote (thought 40s · 12k tokens); outside the desktop app they always show",
+      "default": false
+    },
     "day_separators": {
       "type": "boolean",
-      "title": "Day separators",
-      "description": "Above the first message of a new day, a line naming the day (── Yesterday ──)",
+      "title": "Day and pause separators",
+      "description": "Above the first message of a new day, a line naming the day (── Yesterday ──), and after a pause of an hour or more, one saying how long (── 3 hours later ──)",
       "default": true
     },
     "prompt_time": {

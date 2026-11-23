@@ -6,12 +6,15 @@ The Claude Code desktop app labels messages with how long ago they were sent ("J
 
 ## What you'll see
 
-- Each of Claude's answers gets a grey time at its bottom right, where the answer ends, so you can see when it finished without hovering. It shows up as soon as the answer does. In Settings you can move it to its own line under the answer.
+- Each of Claude's answers gets a grey time at its bottom right, where the answer ends, so you can see when it finished without hovering. It shows up as soon as the answer does. In Settings you can move it to its own line under the answer, at the right, so it doesn't narrow the answer's text.
 - After that time, the answer shows how long Claude took, counted from when you sent your message: `23:21 · 2m 14s`. While Claude is still working, it shows the time so far. You can turn this off in Settings.
+- If you turn it on in Settings, the time also shows how hard Claude worked on that answer: how long it thought, and how many tokens it wrote, tool calls included. The time then moves to its own line under the answer, since beside the last line there's no room for more without narrowing the answer or covering its text. In the desktop app the details appear to the left of the time while you point at it, so reading with the pointer over the answer doesn't bring them up: `thought 40s · 12k tokens · 23:21 · 2m 14s`. Outside the desktop app, in the terminal for example, they always show.
+- Tokens are the pieces Claude counts text in, about three quarters of a word each; the more Claude writes, the more of your usage it takes. The details appear once the answer is saved, usually a second or two after it shows up. A turn that didn't think shows only its tokens, and work done by subagents isn't counted.
 - The output of slash commands like `/reload-plugins` or `/cost` gets a time in the same spot.
 - Your own messages show their time as soon as your pointer is anywhere over them, just left of the app's own label, which is quicker than aiming at the label and waiting for its tooltip. If you'd rather see it all the time, a setting puts it on a small line above each message instead. You can also turn it off.
 - In the terminal, your messages get their time on the line underneath.
-- When a conversation runs into a new day, a line above your first message of that day names it: `── Today ──`, `── Yesterday ──`, or for older days `── Thu 2 Oct ──`. A conversation that has stayed within today gets none. You can turn this off in Settings.
+- When a conversation runs into a new day, a line above your first message of that day names it: `── Today ──`, `── Yesterday ──`, or for older days `── Thu 2 Oct ──`. A conversation that has stayed within today gets none. Within a day, when you write again an hour or more after the last message, a line says how long the pause was, to the nearest hour: `── 3 hours later ──`. You can turn both off in Settings.
+- Since those lines name each day, times under them leave the date out: after `── Thu 2 Oct ──` you see `08:05`, not `2 Oct, 08:05`. The one exception is an answer that finishes after midnight: no line comes before it on the new day, so it shows its date, even if that day is today. The lines are drawn in the desktop app and the terminal; elsewhere, or with the lines turned off, times from other days show their date as below.
 
 Times follow your computer's time zone. With the default 24-hour clock they look like this:
 
@@ -25,11 +28,11 @@ With the 12-hour setting, the same times read `11:21 PM` and `2 Oct, 8:05 AM`.
 
 Dates can also be written in Italian or Chinese:
 
-| Language | This year | A previous year | 12-hour clock |
-| --- | --- | --- | --- |
-| English | `2 Oct, 08:05` | `2 Oct 2025, 08:05` | `11:21 PM` |
-| Italiano | `2 ott, 08:05` | `2 ott 2025, 08:05` | `11:21 PM` |
-| 中文 | `10月2日 08:05` | `2025年10月2日 08:05` | `下午11:21` |
+| Language | This year | A previous year | 12-hour clock | Thinking and tokens |
+| --- | --- | --- | --- | --- |
+| English | `2 Oct, 08:05` | `2 Oct 2025, 08:05` | `11:21 PM` | `thought 40s · 1.5k tokens` |
+| Italiano | `2 ott, 08:05` | `2 ott 2025, 08:05` | `11:21 PM` | `pensato 40s · 1,5k token` |
+| 中文 | `10月2日 08:05` | `2025年10月2日 08:05` | `下午11:21` | `思考 40s · 1.5k token` |
 
 Messages sent before you installed the mod get times too. The mod reads them from the conversation history Claude Code already saves on your computer.
 
@@ -59,13 +62,14 @@ To get a newer version later, run `claude plugin update message-timestamps@zzx-0
 | --- | --- | --- |
 | `clock` | `24-hour` or `12-hour` | `24-hour` |
 | `language`, how dates are written | `English`, `Italiano` or `中文` | `English` |
-| `reply_time`, where the time on Claude's answers goes | `bottom right` or `below` (on its own line under the answer) | `bottom right` |
+| `reply_time`, where the time on Claude's answers goes | `bottom right` or `below` (on its own line under the answer, at the right) | `bottom right` |
 | `reply_duration`, how long Claude took, after the time on its answers | `true` or `false` | `true` |
-| `day_separators`, a line naming the day when a conversation reaches a new one | `true` or `false` | `true` |
+| `reply_details`, how long Claude thought and how many tokens it wrote, shown when you point at the time; puts the time on its own line under the answer | `true` or `false` | `false` |
+| `day_separators`, a line naming the day when a conversation reaches a new one, or saying how long it paused | `true` or `false` | `true` |
 | `prompt_time`, where the time on your own messages goes in the desktop app | `on hover` (beside the app's "Just now" label) or `above` (always shown, on its own line above the message) | `on hover` |
 | `hover_time`, the time on your own messages in the desktop app | `true` or `false` | `true` |
 
-The desktop app has no settings screen for mods, so how you change these depends on what you have installed. Restart Claude Code after any change.
+The desktop app has no settings screen for mods, so how you change these depends on what you have installed. A change applies on its own within a few seconds; if it doesn't, type `/reload-plugins` in the session.
 
 If you use Claude Code in a terminal, type `/plugin configure message-timestamps@zzx-007-d` in a session and pick the values from the menu.
 
@@ -95,7 +99,7 @@ To find the times of older messages, the mod runs a small Node.js script (`scrip
 
 ## What you need
 
-- Claude Code with mod support. It was built on version 2.1.325 and last tested on 2.1.328. Versions before 2.1.271 can't load it because of how its settings are declared. Mods are an early-access feature, so a future Claude Code update could break this one.
+- Claude Code with mod support. It was built on version 2.1.325 and last tested on 2.1.330. Versions before 2.1.271 can't load it because of how its settings are declared. Mods are an early-access feature, so a future Claude Code update could break this one.
 - Node.js, which the mod uses to read times of older messages. Without it, only messages sent after a session starts get a time.
 - A Code tab session, in the desktop app or the terminal. The regular Chat tab doesn't run mods.
 

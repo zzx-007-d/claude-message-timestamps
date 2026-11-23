@@ -6,7 +6,9 @@ import type { Stamps } from '../types'
 // Times are kept "local-shifted": UTC ms minus the zone offset, so the UTC
 // getters below read local wall-clock time without needing the zone here.
 const stamps = atom({ plugin: 'message-timestamps', key: 'stamps' } as const, {} as Stamps, {
-  shape: 'stamps-1',
+  // 2: times read before compacted chats' summaries were left out may hold a
+  // summary's misleading time, and a reread only adds; drop them to reread.
+  shape: 'stamps-2',
 })
 const finals = atom({ plugin: 'message-timestamps', key: 'finals' } as const, [] as string[], {
   shape: 'finals-1',
@@ -24,6 +26,14 @@ const durations = atom({ plugin: 'message-timestamps', key: 'durations' } as con
 // running or not yet in the transcript file. A message you send while Claude
 // works joins the running turn and doesn't move it.
 const promptAt = atom({ plugin: 'message-timestamps', key: 'promptAt' } as const, null as number | null)
+// How long each saved turn thought, in ms, and how many tokens it wrote,
+// keyed like `durations`.
+const thinking = atom({ plugin: 'message-timestamps', key: 'thinking' } as const, {} as Stamps, {
+  shape: 'thinking-1',
+})
+const tokens = atom({ plugin: 'message-timestamps', key: 'tokens' } as const, {} as Stamps, {
+  shape: 'tokens-1',
+})
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -74,6 +84,29 @@ const DATE_STYLES: Record<Language, DateStyle> = {
   },
 }
 
+// The words for how hard Claude worked, per language: "thought 40s · 12k tokens".
+type WorkWords = {
+  thought: string
+  // A token count already shortened ("12k"), with its word; `count` is the exact number.
+  tokens: (amount: string, count: number) => string
+  // The decimal separator in "1.5k".
+  decimal: string
+}
+const WORK_WORDS: Record<Language, WorkWords> = {
+  English: { thought: 'thought', tokens: (amount, count) => `${amount} ${count === 1 ? 'token' : 'tokens'}`, decimal: '.' },
+  Italiano: { thought: 'pensato', tokens: amount => `${amount} token`, decimal: ',' },
+  中文: { thought: '思考', tokens: amount => `${amount} token`, decimal: '.' },
+}
+
+// A token count kept short: 850, 1.5k, 12k, 2.3M.
+export function formatTokens(count: number, decimal: string): string {
+  const short = (n: number, unit: string) => `${n.toFixed(1).replace(/\.0$/, '').replace('.', decimal)}${unit}`
+  if (count < 1000) return String(count)
+  if (count < 9_950) return short(count / 1000, 'k')
+  if (count < 999_500) return `${Math.round(count / 1000)}k`
+  return short(count / 1_000_000, 'M')
+}
+
 // A local-shifted time's day, as a whole number of days: two times are on the
 // same day when these match, and yesterday is one less.
 const dayNumber = (local: number) => Math.floor(local / 86_400_000)
@@ -100,10 +133,19 @@ function timesInOrder(map: Stamps): number[] {
   return sortedTimes
 }
 
-// Whether the message sent at `at` is the first of its day: no message before
-// it, or the one just before it was sent on another day. A first message sent
-// today needs none: the whole conversation is today so far.
-function startsNewDay(map: Stamps, at: number, now: number): boolean {
+// How long the conversation must have paused before a message for it to get a
+// line saying so.
+const PAUSE_MS = 60 * 60_000
+
+// The words for a pause, in whole hours: "3 hours later".
+const PAUSE_WORDS: Record<Language, (hours: number) => string> = {
+  English: hours => (hours === 1 ? '1 hour later' : `${hours} hours later`),
+  Italiano: hours => (hours === 1 ? '1 ora dopo' : `${hours} ore dopo`),
+  中文: hours => `${hours} 小时后`,
+}
+
+// The send time of the message just before the one sent at `at`, if any.
+function previousTime(map: Stamps, at: number): number | undefined {
   const times = timesInOrder(map)
   // Binary search for the first time not before `at`; the one before it is
   // the previous message's.
@@ -114,14 +156,57 @@ function startsNewDay(map: Stamps, at: number, now: number): boolean {
     if ((times[mid] ?? Infinity) < at) lo = mid + 1
     else hi = mid
   }
-  const previous = times[lo - 1]
-  if (previous === undefined) return dayNumber(at) !== dayNumber(now)
-  return dayNumber(previous) !== dayNumber(at)
+  return times[lo - 1]
+}
+
+// When a time shows its date: `auto`, unless it's today; `omit`, never, as the
+// day is already said above it; `force`, always.
+type DateRule = 'auto' | 'omit' | 'force'
+
+// Whether this surface draws separators: they go above your messages, in the
+// desktop app and the terminal. Elsewhere times keep their dates.
+function hasSeparators(surface: string): boolean {
+  return isSeparatorOn && (surface === 'terminal' || surface === 'desktop')
+}
+
+// Where separators are drawn, whether the day of a time at `at` (a command's
+// output) is already said above it: an earlier message was sent that day, and
+// the first message of each day has a separator or a date of its own.
+function isDayShownAbove(map: Stamps, at: number): boolean {
+  const previous = previousTime(map, at)
+  return previous !== undefined && dayNumber(previous) === dayNumber(at)
+}
+
+// Where separators are drawn, the date rule for a reply whose turn took
+// `duration`. Its turn's prompt has its day said above it, so a reply that
+// finished the same day leaves out its date. One that ran past midnight shows
+// it, even today: separators only go above your messages, and the reply's own
+// earlier text blocks, though stored, show no time. Without the turn's length,
+// the time just before it decides.
+function replyDateRule(map: Stamps, at: number, duration: number | undefined): DateRule {
+  if (duration !== undefined && duration >= 0) return dayNumber(at - duration) === dayNumber(at) ? 'omit' : 'force'
+  return isDayShownAbove(map, at) ? 'omit' : 'auto'
+}
+
+// The separator's words above the message sent at `at`, or undefined for
+// none. The first message of a day gets the day's name ("Yesterday"), unless
+// it's the first of the conversation and sent today: the whole conversation is
+// today so far. A message sent an hour or more after the one before it, on
+// the same day, gets how long the pause was, to the nearest hour.
+function separatorText(map: Stamps, at: number, now: number): string | undefined {
+  const previous = previousTime(map, at)
+  if (previous === undefined) return dayNumber(at) !== dayNumber(now) ? formatDay(at, now) : undefined
+  if (dayNumber(previous) !== dayNumber(at)) return formatDay(at, now)
+  const pause = at - previous
+  return pause >= PAUSE_MS ? pauseWords(Math.round(pause / PAUSE_MS)) : undefined
 }
 
 // Settings, read once in `register`.
-// "Language": how dates and 12-hour times are written.
+// "Language": how dates and 12-hour times are written, and the words for how
+// hard Claude worked and for a pause.
 let dateStyle = DATE_STYLES.English
+let workWords = WORK_WORDS.English
+let pauseWords = PAUSE_WORDS.English
 // "Clock": 24-hour (23:21) or 12-hour (11:21 PM).
 let isTwelveHour = false
 // "Where Claude's time goes": bottom right of the answer, or on its own line
@@ -129,7 +214,11 @@ let isTwelveHour = false
 let isReplyTimeBelow = false
 // "How long Claude took": the turn's length after its time.
 let isDurationOn = true
-// "Day separators": a line naming the day above its first message.
+// "Thinking and tokens": how long the turn thought and how much it wrote.
+let isWorkOn = false
+// "Day and pause separators": a line naming the day above its first message,
+// or saying how long a pause was. With them on, times leave out the date when
+// the day is already said above them.
 let isSeparatorOn = true
 // "Where the time on your messages goes" (desktop): on hover beside the app's
 // toolbar, or always, on its own line above the message.
@@ -146,13 +235,28 @@ export function formatDuration(ms: number): string {
 
 // "08:05 · 2m 14s", or just the time when the duration isn't known or the
 // setting is off.
-function replyLabel(at: number, duration: number | null | undefined, now: number): string {
-  const time = formatStamp(at, now)
+function timeLabel(at: number, duration: number | null | undefined, now: number, rule: DateRule): string {
+  const time = formatStamp(at, now, rule)
   if (!isDurationOn || duration == null || duration < 0) return time
   return `${time} · ${formatDuration(duration)}`
 }
 
-export function formatStamp(local: number, localNow: number): string {
+// "thought 40s · 12k tokens", each part left out when it isn't known; empty
+// when neither is or the setting is off.
+function workLabel(thought: number | undefined, written: number | undefined): string {
+  if (!isWorkOn) return ''
+  const parts: string[] = []
+  // Under half a second would read "0s".
+  if (thought !== undefined && thought >= 500) parts.push(`${workWords.thought} ${formatDuration(thought)}`)
+  if (written !== undefined && written > 0) {
+    parts.push(workWords.tokens(formatTokens(written, workWords.decimal), written))
+  }
+  return parts.join(' · ')
+}
+
+// "23:21" today, or with the date another day ("2 Oct, 08:05") unless
+// `rule` says otherwise.
+export function formatStamp(local: number, localNow: number, rule: DateRule = 'auto'): string {
   const d = new Date(local)
   const now = new Date(localNow)
   const hours = d.getUTCHours()
@@ -163,7 +267,7 @@ export function formatStamp(local: number, localNow: number): string {
     d.getUTCFullYear() === now.getUTCFullYear() &&
     d.getUTCMonth() === now.getUTCMonth() &&
     d.getUTCDate() === now.getUTCDate()
-  if (sameDay) return time
+  if (rule === 'omit' || (rule === 'auto' && sameDay)) return time
   const year = d.getUTCFullYear() === now.getUTCFullYear() ? null : d.getUTCFullYear()
   return dateStyle.withTime(d.getUTCDate(), d.getUTCMonth(), year, time)
 }
@@ -200,11 +304,20 @@ async function backfill($: EngineInterface): Promise<void> {
     $.ui.log(`message-timestamps: backfill failed (${ran.exitCode}): ${ran.stderr.slice(0, 200)}`, { to: 'debug' })
     return
   }
-  const out = JSON.parse(ran.stdout) as { tz: number; rows: Stamps; finals: string[]; durations?: Stamps }
+  const out = JSON.parse(ran.stdout) as {
+    tz: number
+    rows: Stamps
+    finals: string[]
+    durations?: Stamps
+    thinking?: Stamps
+    tokens?: Stamps
+  }
   await update($, tzOffset, () => out.tz)
   await update($, stamps, current => ({ ...current, ...out.rows }))
   await update($, finals, () => out.finals)
   await update($, durations, () => out.durations ?? {})
+  await update($, thinking, () => out.thinking ?? {})
+  await update($, tokens, () => out.tokens ?? {})
 }
 
 let pending: Promise<void> | undefined
@@ -222,8 +335,11 @@ function refresh($: EngineInterface): Promise<void> {
 export const register: Register = (on, options) => {
   isTwelveHour = options.clock === '12-hour'
   dateStyle = DATE_STYLES[options.language as Language] ?? DATE_STYLES.English
+  workWords = WORK_WORDS[options.language as Language] ?? WORK_WORDS.English
+  pauseWords = PAUSE_WORDS[options.language as Language] ?? PAUSE_WORDS.English
   isReplyTimeBelow = options.reply_time === 'below'
   isDurationOn = options.reply_duration !== false
+  isWorkOn = options.reply_details === true
   isSeparatorOn = options.day_separators !== false
   isPromptTimeAbove = options.prompt_time === 'above'
   const isHoverTimeOn = options.hover_time !== false
@@ -256,10 +372,12 @@ export const register: Register = (on, options) => {
     return done
   })
 
-  // Live record: the moment each prompt or reply block is stored.
+  // Live record: the moment each prompt or reply block is stored. Not a
+  // compacted chat's summary, which comes in as a user row but is no message
+  // of yours (backfill.cjs leaves it out too).
   on('session.append', async ($, e, next) => {
     const stored = await next(e)
-    if (e.agentId === undefined && stored.deny === undefined && isShownRow(stored.message)) {
+    if (e.agentId === undefined && e.door !== 'compaction' && stored.deny === undefined && isShownRow(stored.message)) {
       ensurePoller($)
       const at = await localNow($)
       await update($, stamps, current => ({ ...current, [stored.uuid]: at }))
@@ -275,7 +393,8 @@ export const register: Register = (on, options) => {
   // Codex: shown only while you hover the message, on the line of the app's
   // own hover toolbar (Just now, copy, rewind), just left of it.
   // Above it, when it's the first message of a new day, a separator naming
-  // the day ("── Yesterday ──").
+  // the day ("── Yesterday ──"), or after a pause of an hour or more, one
+  // saying how long ("── 3 hours later ──").
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
     const isHoverShown = e.surface === 'terminal' || isHoverTimeOn
@@ -289,13 +408,17 @@ export const register: Register = (on, options) => {
     }
     const { Box, Text } = $.ui.resolve(e)
     const now = await localNow($)
+    const words = isSeparatorOn ? separatorText(map, at, now) : undefined
     const separator =
-      isSeparatorOn && startsNewDay(map, at, now) ? (
+      words === undefined ? null : (
         <Box justifyContent="center" marginY="xs">
-          <Text dimColor size="caption">{`── ${formatDay(at, now)} ──`}</Text>
+          <Text dimColor size="caption">{`── ${words} ──`}</Text>
         </Box>
-      ) : null
-    const stamp = <Text dimColor size="caption">{formatStamp(at, now)}</Text>
+      )
+    // With the separators on, your message's day is always said above it: by
+    // its own separator when it's the first of its day, by an earlier one
+    // otherwise.
+    const stamp = <Text dimColor size="caption">{formatStamp(at, now, isSeparatorOn ? 'omit' : 'auto')}</Text>
     if (e.surface === 'terminal') {
       return (
         <Box flexDirection="column">
@@ -363,11 +486,15 @@ export const register: Register = (on, options) => {
     const row = await next(e)
     let at: number | undefined
     let duration: number | undefined
+    let thought: number | undefined
+    let written: number | undefined
     if (known !== undefined) {
       // Saved already: shown only if it's its turn's last block of text.
       if ((await read($, finals)).includes(msgId)) {
         at = known
         duration = (await read($, durations))[msgId]
+        thought = (await read($, thinking))[msgId]
+        written = (await read($, tokens))[msgId]
       }
     } else {
       // Not in the transcript file yet, so it's the newest reply: show the
@@ -380,38 +507,66 @@ export const register: Register = (on, options) => {
       }
     }
     if (at === undefined) return row
-    return withReplyTime($.ui.resolve(e), row, replyLabel(at, duration, await localNow($)))
+    const rule = hasSeparators(e.surface) ? replyDateRule(map, at, duration) : 'auto'
+    const time = timeLabel(at, duration, await localNow($), rule)
+    // Only the desktop has a pointer to reveal the details with.
+    const hoverId = e.surface === 'desktop' ? e.requestId : undefined
+    return withReplyTime($.ui.resolve(e), row, time, workLabel(thought, written), hoverId)
   })
 
   // A slash command's output (/reload-plugins, /cost, ...): the app treats it
   // like a reply (it gets the copy/pin/"Just now" row), so it gets a time too,
   // placed the same way.
   on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => {
-    const at = (await read($, stamps))[e.requestId]
+    const map = await read($, stamps)
+    const at = map[e.requestId]
     const row = await next(e)
     if (at === undefined) {
       retryLater()
       return row
     }
-    return withReplyTime($.ui.resolve(e), row, formatStamp(at, await localNow($)))
+    const rule = hasSeparators(e.surface) && isDayShownAbove(map, at) ? 'omit' : 'auto'
+    const time = formatStamp(at, await localNow($), rule)
+    return withReplyTime($.ui.resolve(e), row, time, '', undefined)
   })
 }
 
 // Claude's answer (or a command's output) with its time: at the bottom right,
-// beside the last line, or on its own line under the text, lined up with it.
-// The time's box never shrinks, so a long date can't wrap.
+// beside the last line, or on its own line under the text, at its right edge.
+// The time goes on its own line when the setting asks for it, and whenever
+// thinking and tokens are on: beside the last line there's no room for them
+// without narrowing the whole answer or covering its text. On that line `work`
+// goes before the time; given `hoverId` (where there's a pointer) it shows
+// only while the pointer is on the time itself, so reading or scrolling with
+// the pointer over the answer leaves it hidden. The time's box never shrinks,
+// so a long date can't wrap.
 function withReplyTime(
   { Box, Text }: ReturnType<EngineInterface['ui']['resolve']>,
   row: RenderElement,
   label: string,
+  work: string,
+  hoverId: string | undefined,
 ): RenderElement {
   const time = <Text dimColor size="body">{label}</Text>
-  if (isReplyTimeBelow) {
+  if (isReplyTimeBelow || isWorkOn) {
+    // The keyed Box around the time is the hover area; the work appears in it,
+    // before the time, which stays put. The work's own Box has no key: a keyed
+    // one would be its own hover area, and a hidden Box can't be hovered. The
+    // no-break space keeps the gap that a plain trailing space would lose. Only
+    // the time never shrinks, so in a narrow window the work wraps instead.
+    const reveal = hoverId === undefined ? {} : { display: 'none' as const, hover: { display: 'flex' as const } }
     return (
       <Box flexDirection="column">
         {row}
-        <Box key="stamp" flexShrink={0} paddingLeft="xs" marginTop="xs">
-          {time}
+        <Box flexDirection="row" justifyContent="flex-end" marginTop="xs">
+          <Box key="stamp" flexDirection="row">
+            {work === '' ? null : (
+              <Box {...reveal}>
+                <Text dimColor size="body">{`${work} · `}</Text>
+              </Box>
+            )}
+            <Box flexShrink={0}>{time}</Box>
+          </Box>
         </Box>
       </Box>
     )

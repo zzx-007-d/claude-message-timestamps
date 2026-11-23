@@ -11,6 +11,10 @@ declare module 'claude-code' {
       latestAt: number | null
       /** API message id of each turn's last text reply -> how long that turn took, in ms. */
       durations: Shaped<Stamps>
+      /** The same ids -> how long that turn thought, in ms. */
+      thinking: Shaped<Stamps>
+      /** The same ids -> how many tokens Claude wrote in that turn. */
+      tokens: Shaped<Stamps>
       /** When the newest turn with a prompt started (local-shifted ms), recorded live. */
       promptAt: number | null
       /** Minutes behind UTC, as Date#getTimezoneOffset reports it; null until known. */
