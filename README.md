@@ -99,7 +99,7 @@ To find the times of older messages, the mod runs a small Node.js script (`scrip
 
 ## What you need
 
-- Claude Code with mod support. It was built on version 2.1.325 and last tested on 2.1.330. Versions before 2.1.271 can't load it because of how its settings are declared. Mods are an early-access feature, so a future Claude Code update could break this one.
+- Claude Code with mod support. It was built on version 2.1.325 and last tested on 2.1.328. Versions before 2.1.271 can't load it because of how its settings are declared. Mods are an early-access feature, so a future Claude Code update could break this one.
 - Node.js, which the mod uses to read times of older messages. Without it, only messages sent after a session starts get a time.
 - A Code tab session, in the desktop app or the terminal. The regular Chat tab doesn't run mods.
 
