@@ -2,6 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
 import type { Stamps } from '../types'
+import { HistoryReader, HistoryTail, readWindow } from './transcript'
+import type { HistoryTimes } from './transcript'
 
 // Times are kept "local-shifted": UTC ms minus the zone offset, so the UTC
 // getters below read local wall-clock time without needing the zone here.
@@ -33,6 +35,19 @@ const thinking = atom({ plugin: 'message-timestamps', key: 'thinking' } as const
 })
 const tokens = atom({ plugin: 'message-timestamps', key: 'tokens' } as const, {} as Stamps, {
   shape: 'tokens-1',
+})
+// How much of the context is left before auto-compaction (of the whole window
+// when auto-compaction is off), as a whole percentage, measured after each
+// turn; null until the first reading.
+const contextLeft = atom({ plugin: 'message-timestamps', key: 'contextLeft' } as const, null as number | null)
+// The main conversation's prompt cache: when its last request was sent (real
+// ms, not local-shifted) and how long the cache holds it. Each request renews
+// it; once it lapses, the next message sends the whole conversation uncached.
+const cache = atom({ plugin: 'message-timestamps', key: 'cache' } as const, null as { at: number; ttlMs: number } | null)
+// How long each tool call took, in ms, keyed by its tool_use id: timed live
+// from when it starts running, or read from the transcript for older calls.
+const toolTimes = atom({ plugin: 'message-timestamps', key: 'toolTimes' } as const, {} as Stamps, {
+  shape: 'tools-1',
 })
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -137,11 +152,28 @@ function timesInOrder(map: Stamps): number[] {
 // line saying so.
 const PAUSE_MS = 60 * 60_000
 
+// How long the prompt cache holds a request, as the API reports it.
+const FIVE_MINUTES = 5 * 60_000
+const ONE_HOUR = 60 * 60_000
+
+// The words for the prompt cache's countdown: "cache 42m", "cache expired".
+const CACHE_WORDS: Record<Language, { cache: string; expired: string }> = {
+  English: { cache: 'cache', expired: 'cache expired' },
+  Italiano: { cache: 'cache', expired: 'cache scaduta' },
+  中文: { cache: '缓存', expired: '缓存已过期' },
+}
+
 // The words for a pause, in whole hours: "3 hours later".
 const PAUSE_WORDS: Record<Language, (hours: number) => string> = {
   English: hours => (hours === 1 ? '1 hour later' : `${hours} hours later`),
   Italiano: hours => (hours === 1 ? '1 ora dopo' : `${hours} ore dopo`),
   中文: hours => `${hours} 小时后`,
+}
+
+// What's left of `limit` once `used` tokens are taken, as a whole percentage
+// from 0 to 100.
+export function percentLeft(used: number, limit: number): number {
+  return Math.min(100, Math.max(0, Math.round(100 * (1 - used / limit))))
 }
 
 // The send time of the message just before the one sent at `at`, if any.
@@ -207,6 +239,7 @@ function separatorText(map: Stamps, at: number, now: number): string | undefined
 let dateStyle = DATE_STYLES.English
 let workWords = WORK_WORDS.English
 let pauseWords = PAUSE_WORDS.English
+let cacheWords = CACHE_WORDS.English
 // "Clock": 24-hour (23:21) or 12-hour (11:21 PM).
 let isTwelveHour = false
 // "Where Claude's time goes": bottom right of the answer, or on its own line
@@ -294,30 +327,92 @@ async function localNow($: EngineInterface): Promise<number> {
   return (await $.clock.now()) - (await zoneOffset($)) * 60000
 }
 
-// Reads the saved transcript (it can be far past $.fs.read's 4 MiB cap) with
-// a small Node script shipped in the mod.
+// The conversation history Claude Code saves, read only where it grew since
+// the read before. Another conversation (after /clear), or a file that got
+// shorter, starts over.
+let history: HistoryTail | undefined
+
+// How much of a long history's end is read first, when it's opened.
+const RECENT = 512 * 1024
+
+async function readHistory($: EngineInterface): Promise<HistoryReader | undefined> {
+  const { transcriptPath: path } = await $.session.info()
+  if (path === '' || !(await $.fs.exists(path))) return undefined
+  const { size } = await $.fs.stat(path)
+  const file = {
+    read: (offset: number, length: number) => $.fs.read(path, { offset, length }),
+    readBytes: async (offset: number, length: number) => (await $.fs.read(path, { as: 'bytes', offset, length })).base64,
+  }
+  if (history === undefined || history.path !== path || size < history.offset) {
+    history = new HistoryTail(path)
+    // Opening a long history with nothing kept yet, its end is read first: the
+    // messages on screen get their times at once, the older ones once it's
+    // been read whole. (After a reload the times are still kept: the end
+    // alone would only take the older ones away for a moment.)
+    if (size > RECENT && (await read($, finals)).length === 0) {
+      await keepTimes($, await readWindow(size - RECENT, size, file))
+    }
+  }
+  await history.readTo(size, file)
+  return history.reader
+}
+
+// Whether two kept values hold the same things.
+function isSame(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  return keys.every(k => isSame((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
+}
+
+// Brings the times read from the history into what the mod keeps.
 async function backfill($: EngineInterface): Promise<void> {
-  const id = await $.session.id()
-  const script = `${$.plugin.root}/scripts/backfill.cjs`
-  const ran = await $.process.run(['node', script, id], { timeoutMs: 120000 })
-  if (ran.exitCode !== 0 || ran.isStdoutTruncated) {
-    $.ui.log(`message-timestamps: backfill failed (${ran.exitCode}): ${ran.stderr.slice(0, 200)}`, { to: 'debug' })
-    return
+  const reader = await readHistory($)
+  if (reader !== undefined) await keepTimes($, reader.times())
+}
+
+async function keepTimes($: EngineInterface, out: HistoryTimes): Promise<void> {
+  // Each value is written only when it changed: a write redraws whatever
+  // reads it, every message on screen included.
+  const zone = new Date().getTimezoneOffset()
+  if ((await read($, tzOffset)) !== zone) await update($, tzOffset, () => zone)
+  // A live timing leaves out any wait for your permission, so it wins.
+  const timed = await read($, toolTimes)
+  if (!isSame(timed, { ...out.tools, ...timed })) await update($, toolTimes, current => ({ ...out.tools, ...current }))
+  // A reopened conversation has no live reading yet; the newer one wins.
+  const saved = out.cache
+  const held = await read($, cache)
+  if (saved !== null && (held === null || held.at < saved.at)) {
+    await update($, cache, current => (current !== null && current.at >= saved.at ? current : saved))
   }
-  const out = JSON.parse(ran.stdout) as {
-    tz: number
-    rows: Stamps
-    finals: string[]
-    durations?: Stamps
-    thinking?: Stamps
-    tokens?: Stamps
-  }
-  await update($, tzOffset, () => out.tz)
-  await update($, stamps, current => ({ ...current, ...out.rows }))
-  await update($, finals, () => out.finals)
-  await update($, durations, () => out.durations ?? {})
-  await update($, thinking, () => out.thinking ?? {})
-  await update($, tokens, () => out.tokens ?? {})
+  const sent = await read($, stamps)
+  if (!isSame(sent, { ...sent, ...out.rows })) await update($, stamps, current => ({ ...current, ...out.rows }))
+  if (!isSame(await read($, finals), out.finals)) await update($, finals, () => out.finals)
+  if (!isSame(await read($, durations), out.durations)) await update($, durations, () => out.durations)
+  if (!isSame(await read($, thinking), out.thinking)) await update($, thinking, () => out.thinking)
+  if (!isSame(await read($, tokens), out.tokens)) await update($, tokens, () => out.tokens)
+}
+
+// Reads how full the context is and keeps what's left. The token count is the
+// last answer's, as the status line has it; the auto-compaction point comes
+// from a local estimate (no request is sent). Right after a compaction there's
+// no answer yet to count, so the estimate's total stands in.
+async function measureContext($: EngineInterface): Promise<void> {
+  const { context } = await $.session.usage({ breakdown: 'summary' })
+  const breakdown = context.breakdown
+  const used = context.tokens ?? breakdown?.totalTokens
+  if (used === undefined) return
+  const threshold = breakdown?.isAutoCompactEnabled ? breakdown.autoCompactThreshold : undefined
+  const limit = threshold ?? context.window
+  if (!(limit > 0)) return
+  const left = percentLeft(used, limit)
+  if ((await read($, contextLeft)) !== left) await update($, contextLeft, () => left)
+}
+
+function remeasure($: EngineInterface): void {
+  measureContext($).catch(err => $.ui.log(`message-timestamps: context: ${String(err)}`, { to: 'debug' }))
 }
 
 let pending: Promise<void> | undefined
@@ -337,12 +432,80 @@ export const register: Register = (on, options) => {
   dateStyle = DATE_STYLES[options.language as Language] ?? DATE_STYLES.English
   workWords = WORK_WORDS[options.language as Language] ?? WORK_WORDS.English
   pauseWords = PAUSE_WORDS[options.language as Language] ?? PAUSE_WORDS.English
+  cacheWords = CACHE_WORDS[options.language as Language] ?? CACHE_WORDS.English
   isReplyTimeBelow = options.reply_time === 'below'
   isDurationOn = options.reply_duration !== false
   isWorkOn = options.reply_details === true
   isSeparatorOn = options.day_separators !== false
   isPromptTimeAbove = options.prompt_time === 'above'
   const isHoverTimeOn = options.hover_time !== false
+  const isContextOn = options.context_left !== false
+  const isToolTimeOn = options.tool_time !== false
+  const isCacheTimerOn = options.cache_timer !== false
+
+  // Each request of the main conversation renews its prompt cache, counted
+  // from when the request was sent. The response says for how long it wrote
+  // the cache (1 hour or 5 minutes, the shorter when both); one that only read
+  // it keeps the lifetime written before. Nothing here may throw: a failure
+  // mid-stream would leave the request where it stood.
+  on('turn.step', async function* ($, e, next) {
+    const isTimed = isCacheTimerOn && e.agentId === undefined
+    const at = isTimed ? await $.clock.now().catch(() => undefined) : undefined
+    const result = yield* next(e)
+    if (at !== undefined && result.usage !== null) {
+      try {
+        const u = result.usage
+        const written =
+          (u.ephemeral_5m_input_tokens ?? 0) > 0 ? FIVE_MINUTES : (u.ephemeral_1h_input_tokens ?? 0) > 0 ? ONE_HOUR : undefined
+        if (written !== undefined || u.cache_read_input_tokens > 0 || u.cache_creation_input_tokens > 0) {
+          // A write that named no lifetime is priced as five minutes.
+          await update($, cache, current => ({
+            at,
+            ttlMs: written ?? (u.cache_creation_input_tokens > 0 ? FIVE_MINUTES : current?.ttlMs ?? FIVE_MINUTES),
+          }))
+        }
+      } catch (err) {
+        $.ui.log(`message-timestamps: cache: ${String(err)}`, { to: 'debug' })
+      }
+    }
+    return result
+  })
+
+  // Times each tool call from when it starts running, once allowed: a wait
+  // for your permission isn't counted.
+  // Nothing here may throw: a failed timing must never get in the call's way,
+  // and retrying the hook would run the call twice.
+  on('tool.run', async ($, e, next) => {
+    const id = e.tool_use_id
+    const start = isToolTimeOn && id !== undefined ? await $.clock.now().catch(() => undefined) : undefined
+    const result = await next(e)
+    if (start !== undefined && id !== undefined) {
+      try {
+        const took = (await $.clock.now()) - start
+        await update($, toolTimes, current => ({ ...current, [id]: took }))
+      } catch (err) {
+        $.ui.log(`message-timestamps: tool time: ${String(err)}`, { to: 'debug' })
+      }
+    }
+    return result
+  })
+
+  // A tool call's row: how long it took, at its right edge, once it's done.
+  // Calls under a second get nothing, so quick reads and edits stay clean.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (!isToolTimeOn || e.props.isRunning) return next(e)
+    const took = (await read($, toolTimes))[e.props.tool_use_id]
+    return withToolTime($.ui.resolve(e), await next(e), took)
+  })
+
+  // A folded run of calls ("Read 3 files"): their times added up.
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    if (!isToolTimeOn || e.props.isActive || e.props.isExpanded) return next(e)
+    const times = await read($, toolTimes)
+    let total = 0
+    for (const c of e.props.calls) total += (c.tool_use_id === undefined ? undefined : times[c.tool_use_id]) ?? 0
+    return withToolTime($.ui.resolve(e), await next(e), total)
+  })
 
   // The start of each turn of the main loop that has a prompt (yours, or a
   // notification's), not a continuation and not a subagent's.
@@ -359,6 +522,7 @@ export const register: Register = (on, options) => {
     const started = await next(e)
     void refresh($)
     ensurePoller($)
+    if (isContextOn) remeasure($)
     return started
   })
 
@@ -369,12 +533,23 @@ export const register: Register = (on, options) => {
     ensurePoller($)
     void refresh($)
     isWanted = true
+    if (isContextOn) remeasure($)
     return done
   })
 
+  // A compaction of the main conversation frees the context: measure again.
+  // Not one computed ahead and kept for later, nor one that was called off.
+  on('session.compact', async ($, e, next) => {
+    const done = await next(e)
+    if (isContextOn && e.agentId === undefined && e.trigger !== 'precompute' && done.skip === undefined) {
+      await measureContext($).catch(err => $.ui.log(`message-timestamps: context: ${String(err)}`, { to: 'debug' }))
+    }
+    return done
+  }).catch(($, e, next) => next(e))
+
   // Live record: the moment each prompt or reply block is stored. Not a
   // compacted chat's summary, which comes in as a user row but is no message
-  // of yours (backfill.cjs leaves it out too).
+  // of yours (the history reader leaves it out too).
   on('session.append', async ($, e, next) => {
     const stored = await next(e)
     if (e.agentId === undefined && e.door !== 'compaction' && stored.deny === undefined && isShownRow(stored.message)) {
@@ -488,10 +663,13 @@ export const register: Register = (on, options) => {
     let duration: number | undefined
     let thought: number | undefined
     let written: number | undefined
+    let isNewest = false
     if (known !== undefined) {
       // Saved already: shown only if it's its turn's last block of text.
-      if ((await read($, finals)).includes(msgId)) {
+      const saved = await read($, finals)
+      if (saved.includes(msgId)) {
         at = known
+        isNewest = saved[saved.length - 1] === msgId
         duration = (await read($, durations))[msgId]
         thought = (await read($, thinking))[msgId]
         written = (await read($, tokens))[msgId]
@@ -509,9 +687,19 @@ export const register: Register = (on, options) => {
     if (at === undefined) return row
     const rule = hasSeparators(e.surface) ? replyDateRule(map, at, duration) : 'auto'
     const time = timeLabel(at, duration, await localNow($), rule)
+    // The newest saved answer also says how much context is left before
+    // auto-compaction: "23:21 · 2m 14s · ◕ 62%".
+    // And how long until the prompt cache lapses: "· cache 42m".
+    const extras: Figure[] = []
+    if (isNewest) {
+      const left = isContextOn ? await read($, contextLeft) : null
+      if (typeof left === 'number') extras.push(contextFigure(left))
+      const held = isCacheTimerOn ? await read($, cache) : null
+      if (held !== null && typeof held === 'object') extras.push(cacheFigure(held.at + held.ttlMs - (await $.clock.now())))
+    }
     // Only the desktop has a pointer to reveal the details with.
     const hoverId = e.surface === 'desktop' ? e.requestId : undefined
-    return withReplyTime($.ui.resolve(e), row, time, workLabel(thought, written), hoverId)
+    return withReplyTime($.ui.resolve(e), row, time, workLabel(thought, written), hoverId, extras)
   })
 
   // A slash command's output (/reload-plugins, /cost, ...): the app treats it
@@ -546,8 +734,17 @@ function withReplyTime(
   label: string,
   work: string,
   hoverId: string | undefined,
+  extras: Figure[] = [],
 ): RenderElement {
-  const time = <Text dimColor size="body">{label}</Text>
+  const time =
+    extras.length === 0 ? (
+      <Text dimColor size="body">{label}</Text>
+    ) : (
+      <Box flexDirection="row">
+        <Text dimColor size="body">{label}</Text>
+        {extras.map(figure => figureText(Text, figure))}
+      </Box>
+    )
   if (isReplyTimeBelow || isWorkOn) {
     // The keyed Box around the time is the hover area; the work appears in it,
     // before the time, which stays put. The work's own Box has no key: a keyed
@@ -580,6 +777,56 @@ function withReplyTime(
         {time}
       </Box>
     </Box>
+  )
+}
+
+// A tool call's row (or a folded run of them) with how long it took at its
+// right edge, on its first line; left as drawn under a second or when unknown.
+function withToolTime(
+  { Box, Text }: ReturnType<EngineInterface['ui']['resolve']>,
+  row: RenderElement,
+  took: number | undefined,
+): RenderElement {
+  if (took === undefined || took < 1000) return row
+  return (
+    <Box flexDirection="row" alignItems="flex-start" gap="sm">
+      <Box flexGrow={1} flexShrink={1}>
+        {row}
+      </Box>
+      <Box flexShrink={0}>
+        <Text dimColor size="caption">{formatDuration(took)}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+// A figure after the time on the newest answer: its text, and a color from
+// the theme, or none to stay grey like the time. Each starts with " · " in
+// no-break spaces, which keep the gap the row would otherwise drop.
+type Figure = { text: string; color: 'warning' | 'error' | undefined }
+
+// How much context is left: " · ◕ 62%". The circle empties as the context
+// fills. Grey while there's room, warning under 25%, error under 10%.
+function contextFigure(left: number): Figure {
+  const circle = left >= 88 ? '●' : left >= 63 ? '◕' : left >= 38 ? '◑' : left >= 13 ? '◔' : '○'
+  const color = left < 10 ? 'error' : left < 25 ? 'warning' : undefined
+  return { text: ` · ${circle} ${left}%`, color }
+}
+// How long until the prompt cache lapses: " · cache 42m", grey; under five
+// minutes, " · cache 3m" in the warning color; once it has, " · cache expired",
+// warning too: your next message sends the whole conversation uncached.
+function cacheFigure(leftMs: number): Figure {
+  if (leftMs <= 0) return { text: ` · ${cacheWords.expired}`, color: 'warning' }
+  const minutes = Math.floor(leftMs / 60_000)
+  const amount = minutes < 1 ? '<1m' : `${minutes}m`
+  return { text: ` · ${cacheWords.cache} ${amount}`, color: leftMs < FIVE_MINUTES ? 'warning' : undefined }
+}
+
+function figureText(Text: ReturnType<EngineInterface['ui']['resolve']>['Text'], { text, color }: Figure): RenderElement {
+  return color === undefined ? (
+    <Text dimColor size="body">{text}</Text>
+  ) : (
+    <Text color={color} size="body">{text}</Text>
   )
 }
 

@@ -19,6 +19,19 @@ declare module 'claude-code' {
       promptAt: number | null
       /** Minutes behind UTC, as Date#getTimezoneOffset reports it; null until known. */
       tzOffset: number | null
+      /**
+       * How much of the context is left before auto-compaction (of the whole
+       * window when it's off), as a whole percentage; null until measured.
+       */
+      contextLeft: number | null
+      /**
+       * The main conversation's prompt cache: when its last request was sent
+       * (real ms since the epoch) and how long the cache holds it, in ms.
+       * Null until the first request.
+       */
+      cache: { at: number; ttlMs: number } | null
+      /** Tool call id -> how long the call took to run, in ms. */
+      toolTimes: Shaped<Stamps>
     }
   }
 }

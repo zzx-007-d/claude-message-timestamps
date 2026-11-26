@@ -1,6 +1,6 @@
 {
   "name": "message-timestamps",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Shows when each message was sent and how long Claude took to answer (and, if you turn it on, how hard it worked), with a line marking each new day or long pause. Works in the desktop app and the terminal, with a 24- or 12-hour clock.",
   "types": "./types/index.d.ts",
   "license": "MIT",
@@ -71,6 +71,24 @@
       "type": "boolean",
       "title": "Time on your messages",
       "description": "In the desktop app, show the time on your own messages, on hover or above them depending on the setting above",
+      "default": true
+    },
+    "context_left": {
+      "type": "boolean",
+      "title": "Context left",
+      "description": "After the time on Claude's newest answer, how much of the context is left before Claude Code compacts the conversation on its own (08:05 · 2m 14s · ◑ 62%)",
+      "default": true
+    },
+    "tool_time": {
+      "type": "boolean",
+      "title": "Time on tool calls",
+      "description": "At the right of each command, edit or search Claude ran, how long it took, when it took a second or more",
+      "default": true
+    },
+    "cache_timer": {
+      "type": "boolean",
+      "title": "Cache timer",
+      "description": "After the time on Claude's newest answer, how long until the conversation's prompt cache expires (cache 42m); once it has, your next message is sent uncached and uses more of your limits",
       "default": true
     }
   }

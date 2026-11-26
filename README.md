@@ -15,6 +15,9 @@ The Claude Code desktop app labels messages with how long ago they were sent ("J
 - In the terminal, your messages get their time on the line underneath.
 - When a conversation runs into a new day, a line above your first message of that day names it: `── Today ──`, `── Yesterday ──`, or for older days `── Thu 2 Oct ──`. A conversation that has stayed within today gets none. Within a day, when you write again an hour or more after the last message, a line says how long the pause was, to the nearest hour: `── 3 hours later ──`. You can turn both off in Settings.
 - Since those lines name each day, times under them leave the date out: after `── Thu 2 Oct ──` you see `08:05`, not `2 Oct, 08:05`. The one exception is an answer that finishes after midnight: no line comes before it on the new day, so it shows its date, even if that day is today. The lines are drawn in the desktop app and the terminal; elsewhere, or with the lines turned off, times from other days show their date as below.
+- After the time on Claude's newest answer, a percentage says how much of the context is left before Claude Code compacts the conversation on its own: `23:21 · 2m 14s · ◑ 62%`. The circle empties as the context fills (● ◕ ◑ ◔ ○). It stays grey like the time while there's room, turns yellow under 25% and red under 10%, in your theme's warning and error colors. It's measured when a session opens, after each of Claude's answers and after a compaction, and moves to the newest answer once that's saved. If you've turned auto-compaction off, it's how much of the whole context is left instead. You can turn it off in Settings.
+- After that, how long until the conversation's prompt cache expires: `23:21 · 2m 14s · ◑ 62% · cache 42m`. Each message sends Claude the whole conversation, and the parts it has seen in the last while come from a cache, which is cheaper and faster; every message restarts the countdown. If the conversation sits idle past it (usually an hour, sometimes five minutes, which the mod reads from each answer), the cache expires and your next message sends everything again uncached, which uses much more of your limits, the more so the longer the conversation. Under five minutes left the countdown turns yellow, and once it has run out it reads `cache expired`. It counts down a minute at a time. Reopening a conversation later, the mod reads when it last used the cache from the conversation history. You can turn it off in Settings.
+- Each command, edit or search Claude runs shows how long it took, in grey at the right of its row, once it's done: `42s`. Calls under a second show nothing, so quick reads and edits stay clean. A folded line like "Read 3 files" shows the calls' times added up. The time counts from when the call starts running, so waiting for your permission isn't included; calls made before you installed the mod are timed from the conversation history, where that wait can't be told apart. You can turn it off in Settings.
 
 Times follow your computer's time zone. With the default 24-hour clock they look like this:
 
@@ -68,6 +71,9 @@ To get a newer version later, run `claude plugin update message-timestamps@zzx-0
 | `day_separators`, a line naming the day when a conversation reaches a new one, or saying how long it paused | `true` or `false` | `true` |
 | `prompt_time`, where the time on your own messages goes in the desktop app | `on hover` (beside the app's "Just now" label) or `above` (always shown, on its own line above the message) | `on hover` |
 | `hover_time`, the time on your own messages in the desktop app | `true` or `false` | `true` |
+| `context_left`, how much context is left before auto-compaction, after the time on Claude's newest answer | `true` or `false` | `true` |
+| `tool_time`, how long each tool call took, at the right of its row | `true` or `false` | `true` |
+| `cache_timer`, how long until the prompt cache expires, after the time on Claude's newest answer | `true` or `false` | `true` |
 
 The desktop app has no settings screen for mods, so how you change these depends on what you have installed. A change applies on its own within a few seconds; if it doesn't, type `/reload-plugins` in the session.
 
@@ -95,12 +101,11 @@ If the file already has a `pluginConfigs` section, add the `"message-timestamps@
 
 ## Privacy
 
-To find the times of older messages, the mod runs a small Node.js script (`scripts/backfill.cjs`) that reads the conversation history Claude Code saves in your `.claude` folder. It looks up and reads only the current session's file, writes nothing, and sends nothing over the network. All of the mod's code is in this repository.
+To find the times of older messages, the mod reads the conversation history Claude Code saves in your `.claude` folder (`hooks/transcript.ts`). It reads only the current session's file, and after the first read only the lines added since. It writes nothing, starts no other program, and sends nothing over the network. All of the mod's code is in this repository.
 
 ## What you need
 
 - Claude Code with mod support. It was built on version 2.1.325 and last tested on 2.1.328. Versions before 2.1.271 can't load it because of how its settings are declared. Mods are an early-access feature, so a future Claude Code update could break this one.
-- Node.js, which the mod uses to read times of older messages. Without it, only messages sent after a session starts get a time.
 - A Code tab session, in the desktop app or the terminal. The regular Chat tab doesn't run mods.
 
 ## Turning it off
@@ -123,4 +128,4 @@ If the hover time overlaps the app's label or leaves a gap, change the matching 
 
 A copy installed from GitHub doesn't pick up edits, so first clone this repository, add your clone with `claude plugin marketplace add <folder>`, and install from it. Then edit the file in your clone and type `/reload-plugins`.
 
-To run the tests, use `claude plugin test .` in this folder, and `claude plugin validate .` to check the mod for errors. The script that reads older messages has tests of its own: `node --test tests/`.
+To run the tests, use `claude plugin test .` in this folder, and `claude plugin validate .` to check the mod for errors.

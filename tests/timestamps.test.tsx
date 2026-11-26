@@ -20,15 +20,23 @@ type Seed = {
   stamps?: Record<string, number>
   // The shape the send times were stored under; an older one is dropped.
   stampsShape?: string
+  // How much context is left, as last measured.
+  contextLeft?: number | null
+  // Each turn's last reply, oldest first.
+  finals?: string[]
+  // How long each tool call took, by its id.
+  toolTimes?: Record<string, number>
+  // The prompt cache: when its last request was sent and how long it holds.
+  cache?: { at: number; ttlMs: number } | null
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function seed(on: any, { durations = {}, promptAt = null, thinking = {}, tokens = {}, stamps = {}, stampsShape = 'stamps-2' }: Seed = {}) {
+function seed(on: any, { durations = {}, promptAt = null, thinking = {}, tokens = {}, stamps = {}, stampsShape = 'stamps-2', contextLeft = null, finals = ['msg_old'], toolTimes = {}, cache = null }: Seed = {}) {
   const sent = { u1: AT, msg_old: OLD, u_past: PAST, u_yday: YDAY, u_same: AT + 60_000, ...stamps }
   on('state.get', (_: unknown, e: { key: string }) =>
     e.key === 'stamps'
       ? { value: { value: { shape: stampsShape, value: sent }, version: 1 } }
       : e.key === 'finals'
-        ? { value: { value: { shape: 'finals-1', value: ['msg_old'] }, version: 1 } }
+        ? { value: { value: { shape: 'finals-1', value: finals }, version: 1 } }
         : e.key === 'durations'
           ? { value: { value: { shape: 'durations-1', value: durations }, version: 1 } }
           : e.key === 'thinking'
@@ -39,7 +47,13 @@ function seed(on: any, { durations = {}, promptAt = null, thinking = {}, tokens 
             ? { value: { value: Date.UTC(2026, 10, 14, 23, 21), version: 1 } }
             : e.key === 'promptAt'
               ? { value: { value: promptAt, version: 1 } }
-              : { value: { value: -60, version: 1 } },
+              : e.key === 'contextLeft'
+                ? { value: { value: contextLeft, version: 1 } }
+                : e.key === 'toolTimes'
+                ? { value: { value: { shape: 'tools-1', value: toolTimes }, version: 1 } }
+                : e.key === 'cache'
+                ? { value: { value: cache, version: 1 } }
+                : { value: { value: -60, version: 1 } },
   )
   on('clock.now', () => ({ value: NOW_UTC }))
 }
@@ -624,3 +638,294 @@ for (const component of ['AssistantMessage', 'CommandOutput'] as const) {
     await ui.unmount()
   })
 }
+
+// The time on a saved answer and the context figure after it, as drawn.
+// `msg_old` is the newest one saved.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function replyTime($: any, requestId = 'msg_old-t0', surface: 'terminal' | 'desktop' = 'desktop') {
+  const ui = await $.ui.mount({
+    plugin: 'message-timestamps',
+    surface,
+    component: 'AssistantMessage',
+    requestId,
+    props: { text: 'an answer', isFirstOfReply: true },
+  })
+  const time = (await ui.find({ type: 'Text', text: /\d:\d\d/ }))?.text
+  const found = await ui.find({ type: 'Text', text: /%/ })
+  await ui.unmount()
+  const figure = found && { text: found.text.replace(/\u00a0/g, ' '), color: found.props.color, isDim: found.props.dimColor === true }
+  return { time, figure }
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`the newest answer says how much context is left after its time, on ${surface}`, async ($, on) => {
+    seed(on, { contextLeft: 62 })
+    const { time, figure } = await replyTime($, 'msg_old-t0', surface)
+    expect(time).toMatch(/08:05$/)
+    expect(figure).toEqual({ text: ' · ◑ 62%', color: undefined, isDim: true })
+  })
+}
+
+for (const [left, circle] of [[100, '●'], [75, '◕'], [50, '◑'], [25, '◔'], [5, '○']] as const) {
+  test(`the circle empties as the context fills: ${left}% left draws ${circle}`, async ($, on) => {
+    seed(on, { contextLeft: left })
+    expect((await replyTime($)).figure?.text).toBe(` · ${circle} ${left}%`)
+  })
+}
+
+test('under 25% left the figure turns the warning color', async ($, on) => {
+  seed(on, { contextLeft: 20 })
+  expect((await replyTime($)).figure).toEqual({ text: ' · ◔ 20%', color: 'warning', isDim: false })
+})
+
+test('under 10% left the figure turns the error color', async ($, on) => {
+  seed(on, { contextLeft: 8 })
+  expect((await replyTime($)).figure).toEqual({ text: ' · ○ 8%', color: 'error', isDim: false })
+})
+
+test('an older answer gets no context figure', async ($, on) => {
+  seed(on, { contextLeft: 62, stamps: { msg_older: OLD - 60_000 }, finals: ['msg_older', 'msg_old'] })
+  const { time, figure } = await replyTime($, 'msg_older-t0')
+  expect(time).toMatch(/08:04$/)
+  expect(figure).toBeUndefined()
+})
+
+test('before the first reading there is no context figure', async ($, on) => {
+  seed(on)
+  const { time, figure } = await replyTime($)
+  expect(time).toMatch(/08:05$/)
+  expect(figure).toBeUndefined()
+})
+
+test('turning the context figure off removes it', { options: { context_left: false } }, async ($, on) => {
+  seed(on, { contextLeft: 62 })
+  const { time, figure } = await replyTime($)
+  expect(time).toMatch(/08:05$/)
+  expect(figure).toBeUndefined()
+})
+
+// How full the context is, as the session reports it: `tokens` used of a
+// 200k window, and where auto-compaction runs (none when it's off). Returns
+// what the mod then keeps as the context left.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function usage(on: any, { tokens, threshold }: { tokens?: number; threshold?: number }) {
+  const kept: { left?: number } = {}
+  on('state.set', (_: unknown, e: { key: string; value: number }) => {
+    if (e.key === 'contextLeft') kept.left = e.value
+    return { value: { isSet: true, version: 1 } }
+  })
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: {
+        tokens,
+        window: 200_000,
+        breakdown: { totalTokens: 50_000, isAutoCompactEnabled: threshold !== undefined, autoCompactThreshold: threshold },
+      },
+      rateLimits: {},
+      cost: {},
+    },
+  }))
+  on('session.compact', (_: unknown, e: { messages: unknown[] }) => ({ messages: e.messages }))
+  return kept
+}
+
+// What a compaction leaves: one message holding the summary.
+const SUMMARY = { role: 'user' as const, text: 'Summary of the chat so far', toolUses: [] }
+
+test('after a compaction, what is left is measured against the auto-compaction point', async ($, on) => {
+  const kept = usage(on, { tokens: 60_000, threshold: 160_000 })
+  await $.session.compact({ trigger: 'manual', messages: [SUMMARY] })
+  expect(kept.left).toBe(63)
+})
+
+test('with no answer yet to count, the estimate stands in', async ($, on) => {
+  const kept = usage(on, { threshold: 160_000 })
+  await $.session.compact({ trigger: 'manual', messages: [SUMMARY] })
+  expect(kept.left).toBe(69)
+})
+
+test('with auto-compaction off, what is left is measured against the whole window', async ($, on) => {
+  const kept = usage(on, { tokens: 60_000 })
+  await $.session.compact({ trigger: 'manual', messages: [SUMMARY] })
+  expect(kept.left).toBe(70)
+})
+
+test('a compaction only computed ahead measures nothing', async ($, on) => {
+  const kept = usage(on, { tokens: 60_000, threshold: 160_000 })
+  await $.session.compact({ trigger: 'precompute', messages: [SUMMARY] })
+  expect(kept.left).toBeUndefined()
+})
+
+// A tool call's row, as drawn, and the time at its right if any.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function toolRow($: any, props: Record<string, unknown> = {}, surface: 'terminal' | 'desktop' = 'desktop') {
+  const ui = await $.ui.mount({
+    plugin: 'message-timestamps',
+    surface,
+    component: 'ToolUse',
+    requestId: 'toolu_1',
+    props: { tool_use_id: 'toolu_1', tool: 'Bash', input: { command: 'npm test' }, isRunning: false, isErrored: false, isInterrupted: false, output: { stdout: 'ok', stderr: '' }, ...props },
+  })
+  const text = (await ui.find({ type: 'Text', text: /^\d+[smh]/ }))?.text
+  await ui.unmount()
+  return text
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a tool call shows how long it took, on ${surface}`, async ($, on) => {
+    seed(on, { toolTimes: { toolu_1: 42_000 } })
+    expect(await toolRow($, {}, surface)).toBe('42s')
+  })
+}
+
+test('a tool call under a second shows no time', async ($, on) => {
+  seed(on, { toolTimes: { toolu_1: 300 } })
+  expect(await toolRow($)).toBeUndefined()
+})
+
+test('a tool call still running shows no time yet', async ($, on) => {
+  seed(on, { toolTimes: { toolu_1: 42_000 } })
+  expect(await toolRow($, { isRunning: true, output: undefined })).toBeUndefined()
+})
+
+test('turning tool times off removes them', { options: { tool_time: false } }, async ($, on) => {
+  seed(on, { toolTimes: { toolu_1: 42_000 } })
+  expect(await toolRow($)).toBeUndefined()
+})
+
+test('a folded run of tool calls shows their times added up', async ($, on) => {
+  seed(on, { toolTimes: { toolu_a: 1_500, toolu_b: 2_000, toolu_c: 100 } })
+  const call = (id: string) => ({ tool_use_id: id, tool: 'Read', input: { file_path: 'a.ts' }, isRunning: false, isErrored: false, isInterrupted: false })
+  const ui = await $.ui.mount({
+    plugin: 'message-timestamps',
+    surface: 'desktop',
+    component: 'ToolGroup',
+    props: { calls: [call('toolu_a'), call('toolu_b'), call('toolu_c')], isActive: false, isExpanded: false },
+  })
+  expect((await ui.find({ type: 'Text', text: /^\d+[smh]/ }))?.text).toBe('4s')
+  await ui.unmount()
+})
+
+test('a tool call is timed from when it starts running', async ($, on) => {
+  let now = NOW_UTC
+  on('clock.now', () => ({ value: (now += 2_500) }))
+  const kept: { times?: Record<string, number> } = {}
+  on('state.get', () => ({ value: { value: null, version: 0 } }))
+  on('state.set', (_: unknown, e: { key: string; value: unknown }) => {
+    if (e.key === 'toolTimes') kept.times = (e.value as { value: Record<string, number> }).value
+    return { value: { isSet: true, version: 1 } }
+  })
+  on('tool.run', () => ({ result: 'done' }))
+  await $.tool.run({ tool: 'Bash', command: 'sleep 2', tool_use_id: 'toolu_live' })
+  expect(kept.times).toEqual({ toolu_live: 2_500 })
+})
+
+// The cache countdown after the newest answer's time, as drawn.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function cacheFigure($: any, requestId = 'msg_old-t0') {
+  const ui = await $.ui.mount({
+    plugin: 'message-timestamps',
+    surface: 'desktop',
+    component: 'AssistantMessage',
+    requestId,
+    props: { text: 'an answer', isFirstOfReply: true },
+  })
+  const found = await ui.find({ type: 'Text', text: /cache|缓存/ })
+  await ui.unmount()
+  return found && { text: found.text.replace(/\u00a0/g, ' '), color: found.props.color }
+}
+
+const HOUR = 60 * 60_000
+
+test('the newest answer says how long until the cache expires', async ($, on) => {
+  seed(on, { cache: { at: NOW_UTC - 18 * 60_000, ttlMs: HOUR } })
+  expect(await cacheFigure($)).toEqual({ text: ' · cache 42m', color: undefined })
+})
+
+test('the cache figure comes after the context left', async ($, on) => {
+  seed(on, { contextLeft: 62, cache: { at: NOW_UTC - 18 * 60_000, ttlMs: HOUR } })
+  const ui = await $.ui.mount({
+    plugin: 'message-timestamps',
+    surface: 'desktop',
+    component: 'AssistantMessage',
+    requestId: 'msg_old-t0',
+    props: { text: 'an answer', isFirstOfReply: true },
+  })
+  const texts: string[] = []
+  for (const t of await ui.findAll({ type: 'Text' })) texts.push(t.text.replace(/\u00a0/g, ' '))
+  await ui.unmount()
+  expect(texts.slice(-3)).toEqual(['2 Oct, 08:05', ' · ◑ 62%', ' · cache 42m'])
+})
+
+test('under five minutes left the cache figure turns the warning color', async ($, on) => {
+  seed(on, { cache: { at: NOW_UTC - 57 * 60_000, ttlMs: HOUR } })
+  expect(await cacheFigure($)).toEqual({ text: ' · cache 3m', color: 'warning' })
+})
+
+test('under a minute left it says so', async ($, on) => {
+  seed(on, { cache: { at: NOW_UTC - HOUR + 20_000, ttlMs: HOUR } })
+  expect((await cacheFigure($))?.text).toBe(' · cache <1m')
+})
+
+test('once the cache has expired it says so, in the warning color', async ($, on) => {
+  seed(on, { cache: { at: NOW_UTC - 2 * HOUR, ttlMs: HOUR } })
+  expect(await cacheFigure($)).toEqual({ text: ' · cache expired', color: 'warning' })
+})
+
+test('the cache figure follows the language setting', { options: { language: 'Italiano' } }, async ($, on) => {
+  seed(on, { cache: { at: NOW_UTC - 2 * HOUR, ttlMs: HOUR } })
+  expect((await cacheFigure($))?.text).toBe(' · cache scaduta')
+})
+
+test('an older answer gets no cache figure', async ($, on) => {
+  seed(on, { cache: { at: NOW_UTC, ttlMs: HOUR }, stamps: { msg_older: OLD - 60_000 }, finals: ['msg_older', 'msg_old'] })
+  expect(await cacheFigure($, 'msg_older-t0')).toBeUndefined()
+})
+
+test('turning the cache timer off removes it', { options: { cache_timer: false } }, async ($, on) => {
+  seed(on, { cache: { at: NOW_UTC, ttlMs: HOUR } })
+  expect(await cacheFigure($)).toBeUndefined()
+})
+
+// A request of the main conversation, answered with this cache usage; returns
+// what the mod then keeps as the cache.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function request($: any, on: any, usage: Record<string, number>, { agentId, before }: { agentId?: string; before?: { at: number; ttlMs: number } } = {}) {
+  const kept: { cache?: { at: number; ttlMs: number } } = {}
+  on('clock.now', () => ({ value: NOW_UTC }))
+  on('state.get', (_: unknown, e: { key: string }) => ({ value: { value: e.key === 'cache' ? (before ?? null) : null, version: 1 } }))
+  on('state.set', (_: unknown, e: { key: string; value: unknown }) => {
+    if (e.key === 'cache') kept.cache = e.value as { at: number; ttlMs: number }
+    return { value: { isSet: true, version: 2 } }
+  })
+  on('turn.step', async function* () {
+    return {
+      turnId: 't1',
+      index: 0,
+      answer: 'ok',
+      toolUses: [],
+      stopReason: 'end_turn' as const,
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'm', ...usage },
+    }
+  })
+  // The request streams: read it to its end.
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1, agentId }));
+  return kept.cache
+}
+
+test('a request that writes the cache for an hour starts an hour countdown', async ($, on) => {
+  expect(await request($, on, { cache_creation_input_tokens: 900, ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 900 })).toEqual({ at: NOW_UTC, ttlMs: HOUR })
+})
+
+test('a request that writes it for five minutes starts a five-minute one', async ($, on) => {
+  expect(await request($, on, { cache_creation_input_tokens: 900, ephemeral_5m_input_tokens: 900, ephemeral_1h_input_tokens: 0 })).toEqual({ at: NOW_UTC, ttlMs: 5 * 60_000 })
+})
+
+test('a request that only reads the cache renews it for as long as before', async ($, on) => {
+  expect(await request($, on, { cache_read_input_tokens: 5000 }, { before: { at: NOW_UTC - HOUR, ttlMs: HOUR } })).toEqual({ at: NOW_UTC, ttlMs: HOUR })
+})
+
+test("a subagent's request leaves the conversation's cache alone", async ($, on) => {
+  expect(await request($, on, { cache_creation_input_tokens: 900, ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 900 }, { agentId: 'a1' })).toBeUndefined()
+})
