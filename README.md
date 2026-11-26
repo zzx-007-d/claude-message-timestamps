@@ -2,7 +2,7 @@
 
 The Claude Code desktop app only says how long ago a message was sent ("Just now", "2 hours ago"), and you have to hover over that small label to see the real time. The terminal shows no time at all. This mod puts the time where you can see it. It also shows how long Claude took, how much context is left and when the prompt cache runs out.
 
-![Illustration: your message shows its time on hover, and Claude's answer shows the time it finished at its bottom right](docs/preview.svg)
+![Illustration: your message shows its time on hover, a tool call shows how long it took, and under Claude's newest answer a line shows when it finished, how long it took, the context left and the cache timer](docs/preview.png)
 
 It works in the desktop app and in the terminal. You can turn each part off or change it in [Settings](#settings).
 
