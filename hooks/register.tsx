@@ -722,7 +722,8 @@ export const register: Register = (on, options) => {
 // Claude's answer (or a command's output) with its time: at the bottom right,
 // beside the last line, or on its own line under the text, at its right edge.
 // The time goes on its own line when the setting asks for it, and whenever
-// thinking and tokens are on: beside the last line there's no room for them
+// thinking and tokens or the context and cache figures are on: beside the last
+// line there's no room for them
 // without narrowing the whole answer or covering its text. On that line `work`
 // goes before the time; given `hoverId` (where there's a pointer) it shows
 // only while the pointer is on the time itself, so reading or scrolling with
@@ -745,7 +746,9 @@ function withReplyTime(
         {extras.map(figure => figureText(Text, figure))}
       </Box>
     )
-  if (isReplyTimeBelow || isWorkOn) {
+  // The figures after the newest answer's time would widen the column beside
+  // its last line and narrow the whole answer: with them the time goes below.
+  if (isReplyTimeBelow || isWorkOn || extras.length > 0) {
     // The keyed Box around the time is the hover area; the work appears in it,
     // before the time, which stays put. The work's own Box has no key: a keyed
     // one would be its own hover area, and a hidden Box can't be hovered. The

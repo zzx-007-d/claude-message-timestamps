@@ -683,6 +683,34 @@ test('under 10% left the figure turns the error color', async ($, on) => {
   expect((await replyTime($)).figure).toEqual({ text: ' · ○ 8%', color: 'error', isDim: false })
 })
 
+test('with the figures the newest answer keeps its width: its time goes on a line below', async ($, on) => {
+  seed(on, { contextLeft: 62 })
+  const ui = await $.ui.mount({
+    plugin: 'message-timestamps',
+    surface: 'desktop',
+    component: 'AssistantMessage',
+    requestId: 'msg_old-t0',
+    props: { text: 'an answer', isFirstOfReply: true },
+  })
+  const line = (await ui.findAll({ type: 'Box' })).find(box => box.props.justifyContent === 'flex-end')
+  await ui.unmount()
+  expect(line).toBeDefined()
+})
+
+test('an older answer, without figures, keeps its time beside the last line', async ($, on) => {
+  seed(on, { contextLeft: 62, stamps: { msg_older: OLD - 60_000 }, finals: ['msg_older', 'msg_old'] })
+  const ui = await $.ui.mount({
+    plugin: 'message-timestamps',
+    surface: 'desktop',
+    component: 'AssistantMessage',
+    requestId: 'msg_older-t0',
+    props: { text: 'an answer', isFirstOfReply: true },
+  })
+  const line = (await ui.findAll({ type: 'Box' })).find(box => box.props.justifyContent === 'flex-end')
+  await ui.unmount()
+  expect(line).toBeUndefined()
+})
+
 test('an older answer gets no context figure', async ($, on) => {
   seed(on, { contextLeft: 62, stamps: { msg_older: OLD - 60_000 }, finals: ['msg_older', 'msg_old'] })
   const { time, figure } = await replyTime($, 'msg_older-t0')
