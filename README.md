@@ -177,6 +177,14 @@ A copy installed from GitHub doesn't pick up your edits. First clone this reposi
 
 In this folder, `claude plugin test .` runs the tests and `claude plugin validate .` checks the mod for errors.
 
+Some tests read a real session with its text taken out, [`tests/sample-history.ts`](tests/sample-history.ts). After a Claude Code update, make a new one from a session started with the new version, in which Claude ran tools and thought, then run the tests again. If a field the mod reads was renamed or dropped, or rows are written differently, they fail. They can't tell if a field kept its name but changed meaning.
+
+```shell
+node tests/make-sample.cjs $HOME/.claude/projects/<project folder>/<session>.jsonl
+```
+
+It copies the session's first two prompts; a number after the path takes more. It warns if the sample has no tool call or thinking time, or if Claude Code now writes its lines differently.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

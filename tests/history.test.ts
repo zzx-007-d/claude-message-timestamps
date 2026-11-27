@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { firstNewline, HistoryReader, HistoryTail, readWindow, utf8Length } from '../hooks/transcript'
+import sample from './sample-history'
 
 // Rows as Claude Code saves them, one JSON object per line.
 const at = (s: string) => `2026-11-14T10:${s}Z`
@@ -294,3 +295,115 @@ test('read from the start, the window is the whole history', async () => {
   const file = fakeFile(lines(ROWS))
   expect(await readWindow(0, file.size, file)).toEqual(read(ROWS))
 })
+
+// A real session, saved by Claude Code and stripped of its text by
+// make-sample.cjs. The rows above are written by hand; this checks the mod
+// still understands what Claude Code actually writes. After a Claude Code
+// update, make a new sample (see make-sample.cjs) and run the tests again.
+// What the mod should find is worked out here straight from the rows, a
+// simpler way than the reader's, so the checks hold for any new sample too.
+// The reader gets the file's text as is, the way the mod reads it.
+function readSample() {
+  const reader = new HistoryReader()
+  reader.feed(sample)
+  return reader.times()
+}
+
+type SampleRow = {
+  type: string
+  uuid?: string
+  timestamp?: string
+  isMeta?: boolean
+  isCompactSummary?: boolean
+  thinkingDurationMs?: number
+  message?: { id?: string; content?: unknown; usage?: { output_tokens?: number } }
+}
+type SampleBlock = { type?: string; id?: string; tool_use_id?: string }
+
+const sampleRows = sample
+  .trim()
+  .split('\n')
+  .map(l => JSON.parse(l) as SampleRow)
+const blocksOf = (r: SampleRow) => (Array.isArray(r.message?.content) ? (r.message.content as SampleBlock[]) : [])
+const isTypedPrompt = (r: SampleRow) =>
+  r.type === 'user' &&
+  !r.isMeta &&
+  !r.isCompactSummary &&
+  (typeof r.message?.content === 'string' ||
+    (blocksOf(r).some(b => b.type === 'text') && !blocksOf(r).some(b => b.type === 'tool_result')))
+
+test('a real saved session: every prompt and answer gets its time', () => {
+  const out = readSample()
+  const prompts = sampleRows.filter(isTypedPrompt)
+  const answers = sampleRows.filter(r => r.type === 'assistant' && blocksOf(r).some(b => b.type === 'text'))
+  expect(prompts.length).toBeGreaterThan(0)
+  expect(answers.length).toBeGreaterThan(0)
+  for (const r of [...prompts, ...answers]) expect(out.rows[r.uuid!]).toBe(shiftLocal(Date.parse(r.timestamp!)))
+  // Each answer is also found by its message id, with the time of its first row.
+  for (const r of answers) {
+    const first = answers.find(a => a.message!.id === r.message!.id)!
+    expect(out.rows[r.message!.id!]).toBe(shiftLocal(Date.parse(first.timestamp!)))
+  }
+})
+
+test('a real saved session: each turn ends on its last answer, with how long it took, thought and wrote', () => {
+  const out = readSample()
+  // Each prompt's turn runs to the next prompt; its last text answer ends it.
+  // Every row of one API message repeats its tokens, so they count once per id.
+  type Turn = { start: number; last?: string; end?: number; thought: number; tokens: Map<string, number> }
+  const turns: Turn[] = []
+  for (const r of sampleRows) {
+    const when = Date.parse(r.timestamp!)
+    if (isTypedPrompt(r)) turns.push({ start: when, thought: 0, tokens: new Map() })
+    const turn = turns.at(-1)
+    if (!turn || r.type !== 'assistant') continue
+    turn.thought += r.thinkingDurationMs ?? 0
+    const written = r.message?.usage?.output_tokens
+    if (r.message?.id && written !== undefined) turn.tokens.set(r.message.id, written)
+    if (blocksOf(r).some(b => b.type === 'text')) {
+      turn.last = r.message!.id
+      turn.end = when
+    }
+  }
+  const answered = turns.filter(t => t.last)
+  expect(answered.length).toBeGreaterThan(0)
+  expect(out.finals).toEqual(answered.map(t => t.last))
+  const sum = (m: Map<string, number>) => [...m.values()].reduce((a, b) => a + b, 0)
+  expect(out.durations).toEqual(Object.fromEntries(answered.map(t => [t.last, t.end! - t.start])))
+  // A turn that wrote no tokens or didn't think gets no figure.
+  const figures = (of: (t: Turn) => number) =>
+    Object.fromEntries(answered.filter(t => of(t) > 0).map(t => [t.last, of(t)]))
+  expect(out.tokens).toEqual(figures(t => sum(t.tokens)))
+  // make-sample.cjs warns when no turn thought: then a lost thinking time can't show.
+  expect(answered.some(t => t.thought > 0)).toBe(true)
+  expect(out.thinking).toEqual(figures(t => t.thought))
+})
+
+test('a real saved session: every finished tool call gets how long it took', () => {
+  const out = readSample()
+  const started = new Map<string, number>()
+  const took: Record<string, number> = {}
+  for (const r of sampleRows) {
+    for (const b of blocksOf(r)) {
+      if (r.type === 'assistant' && b.type === 'tool_use' && b.id) started.set(b.id, Date.parse(r.timestamp!))
+      if (r.type === 'user' && b.type === 'tool_result' && b.tool_use_id && started.has(b.tool_use_id)) {
+        const ms = Date.parse(r.timestamp!) - started.get(b.tool_use_id)!
+        if (ms >= 0) took[b.tool_use_id] = ms
+      }
+    }
+  }
+  // make-sample.cjs warns when the sample has no tool call.
+  expect(Object.keys(took).length).toBeGreaterThan(0)
+  expect(out.tools).toEqual(took)
+})
+
+test('a real saved session: the cache countdown is found', () => {
+  const cache = readSample().cache
+  expect(cache).not.toBeNull()
+  expect([5 * 60_000, 60 * 60_000]).toContain(cache!.ttlMs)
+})
+
+// The wall-clock time the mod stores, as in transcript.ts.
+function shiftLocal(ms: number) {
+  return ms - new Date(ms).getTimezoneOffset() * 60_000
+}
